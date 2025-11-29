@@ -78,17 +78,24 @@ The simulator implements sophisticated cross-era adjustments to ensure fair comp
 
 **Era-Based Defense Adjustments:**
 - **Early 3PT Era (1980-1999):** -0.05 bonus (hand-checking + sophisticated schemes = best defense)
+  - *Example:* '96 Bulls and '89 Pistons get slightly better defensive ratings
 - **Slow Pace Era (2000-2016):** +0.00 baseline (modern schemes, still physical)
+  - *Example:* '09 Lakers and '14 Spurs maintain their natural defensive ratings
 - **Modern Era (2017-2024):** +0.05 penalty (offensive-friendly rules)
+  - *Example:* '17 Warriors and '24 Celtics face slightly tougher defense than their stats suggest
 - **Pre-3PT Era (1965-1979):** +0.08 penalty (primitive schemes despite physicality)
+  - *Example:* '65 Celtics and '72 Lakers get slightly worse defensive ratings to account for simpler schemes
 
 **Shooting Penalties:**
 - Older teams face small shooting penalties vs newer opponents (0.5% per decade, max 3.5%)
-- Accounts for athletic evolution and rule changes
+- *Example:* When '72 Lakers (1970s) face '24 Celtics (2020s), Lakers' FG% drops by ~2.5%
+- *Example:* '96 Bulls vs '17 Warriors = ~1% shooting penalty for Bulls
+- Accounts for athletic evolution, training advances, and rule changes
 
 **Shot Distribution Fix:**
-- Players with 0% 3PT shooting (Wilt, Kareem, Duncan, etc.) no longer forced to take 3-pointers
+- Players with 0% 3PT shooting (Wilt, Kareem, Duncan, etc.) never attempt 3-pointers
 - Ensures old-school big men perform at their true efficiency
+- *Example:* Wilt Chamberlain only takes shots inside the arc, maintaining his dominant FG%
 
 ## Game Modes
 
@@ -206,41 +213,6 @@ Starting lineups are determined by PPG, ensuring top scorers get priority regard
 - **Trade/roster management** - Build custom rosters
 - **AI game analysis** - LLM-powered game recaps
 - **Multiplayer** - Local hot-seat or online matchups
-
-## Potential Monetization Strategies
-
-**Note:** These are future considerations, not current implementation plans.
-
-### 1. Freemium Model
-**Free tier:**
-- Simulate games with all teams
-- Basic stats display
-- Play-by-play action
-
-**Premium tier ($4.99 one-time or $0.99/month):**
-- Playoff bracket simulation
-- Save/replay games
-- Create custom teams & players
-- Advanced analytics dashboard
-- Interactive mode (User vs CPU)
-- AI-generated post-game analysis
-
-### 2. Retro Gaming Nostalgia Bundle
-- One-time purchase: **$2.99**
-- Market to: 90s NBA fans, retro gaming community, basketball stats enthusiasts, streamers
-- "Relive the greatest NBA matchups in history"
-- Premium retro experience with modern features
-
-### 3. Web App + Ad Revenue
-- Completely free to play
-- Hosted web version (no installation)
-- Google Ads between quarters/games
-- Low barrier to entry, viral potential
-
-### Cost Analysis
-**Compute cost per game: ~$0.0000002** (essentially free)
-**Hosting:** Thousands of concurrent games on $5-10/month server
-**Value proposition:** Nostalgia + accuracy + fun, not compute resources
 
 ## Credits
 
