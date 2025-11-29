@@ -1,0 +1,24 @@
+team_id,team_name,year,display_name,pace_rating,three_pt_rate,def_rating
+celtics_64,Celtics,1965,1965 Celtics,1.2,0.0,0.92
+knicks_69,Knicks,1970,1970 Knicks,1.15,0.0,0.88
+bucks_70,Bucks,1971,1971 Bucks,1.18,0.0,0.95
+lakers_71,Lakers,1972,1972 Lakers,1.16,0.0,0.98
+sixers_82,76ers,1983,1983 76ers,1.08,0.05,0.9
+bulls_84,Bulls (Rookie MJ),1985,1985 Bulls (Rookie MJ),1.02,0.08,1.08
+celtics_85,Celtics,1986,1986 Celtics,1.05,0.1,0.9
+lakers_86,Lakers,1987,1987 Lakers,1.08,0.12,1.0
+pistons_88,Pistons,1989,1989 Pistons,0.98,0.08,0.86
+bulls_92,Bulls,1993,1993 Bulls,0.94,0.16,0.87
+rockets_93,Rockets,1994,1994 Rockets,0.96,0.22,0.89
+bulls_95,Bulls,1996,1996 Bulls,0.92,0.18,0.85
+jazz_97,Jazz,1998,1998 Jazz,0.94,0.18,0.93
+lakers_99,Lakers,2000,2000 Lakers,0.9,0.2,0.92
+lakers_08,Lakers,2009,2009 Lakers,0.94,0.22,0.9
+mavs_10,Mavericks,2011,2011 Mavericks,0.96,0.23,0.94
+heat_12,Heat,2013,2013 Heat,0.98,0.28,0.93
+spurs_13,Spurs,2014,2014 Spurs,0.96,0.3,0.91
+cavs_15,Cavaliers,2016,2016 Cavaliers,0.99,0.31,0.96
+warriors_16,Warriors,2017,2017 Warriors,1.15,0.42,1.05
+nuggets_22,Nuggets,2023,2023 Nuggets,1.1,0.38,0.95
+celtics_23,Celtics,2024,2024 Celtics,1.12,0.44,0.92
+thunder_24,Thunder,2024,2024 Thunder,1.12,0.39,0.91
