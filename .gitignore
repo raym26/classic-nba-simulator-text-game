@@ -6,6 +6,7 @@ __pycache__/
 .Python
 env/
 venv/
+.venv/
 build/
 develop-eggs/
 dist/
@@ -28,6 +29,7 @@ wheels/
 *.swp
 *.swo
 *~
+.claude/
 
 # OS
 .DS_Store
@@ -38,9 +40,27 @@ wheels/
 ehthumbs.db
 Thumbs.db
 
-# Game saves (for future use)
+# Game saves and logs
 *.save
 *.log
 
-# Dev notes (optional - remove if you want to keep user_vs_computer_idea.txt private)
+# Development files
 user_vs_computer_idea.txt
+game_sims.txt
+sim_data.xlsx
+player_stats_web_data.xlsx
+
+# Backups
+*_backup.csv
+*_backup*.csv
+*_old.csv
+teams_old.csv
+players_old.csv
+
+# Office temp files
+~$*.txt
+~$*.docx
+*.docx
+
+# Excel files (keep only CSVs in repo)
+*.xlsx
