@@ -97,6 +97,38 @@ The simulator implements sophisticated cross-era adjustments to ensure fair comp
 - Ensures old-school big men perform at their true efficiency
 - *Example:* Wilt Chamberlain only takes shots inside the arc, maintaining his dominant FG%
 
+### Balance Philosophy & Methodology
+
+**Goal:** Make cross-era matchups competitive and fair while respecting historical context.
+
+**Approach:**
+1. Start with real statistics from Basketball Reference
+2. Apply era-specific adjustments for rules and athletic evolution
+3. Test extensively with diverse matchups
+4. Iterate based on gameplay results and community feedback
+
+**What We're Balancing:**
+- **Rule differences** - Hand-checking (1980s-90s) vs freedom of movement (2010s+)
+- **Athletic evolution** - Training, nutrition, sports science advances over 60 years
+- **Scheme sophistication** - Modern defensive systems vs older approaches
+- **Pace variations** - 1972 Lakers' breakneck pace vs 2000s grind-it-out basketball
+- **Three-point evolution** - From non-existent to 40+ attempts per game
+
+**Current v2.2 Status:**
+- ✅ Era-based defensive adjustments implemented
+- ✅ Shooting penalties for older teams vs newer opponents
+- ✅ Shot distribution fixes for non-3PT shooters
+- ✅ Usage rate distribution ensures stars get appropriate touches
+- ⚠️ **Known areas for improvement:**
+  - Three-point attempt volume for modern teams
+  - Usage rates for balanced offensive teams (2014 Spurs, 2000 Lakers)
+  - Pace impact on extreme teams (1972 Lakers, 1965 Celtics)
+  - Foul rate calibration across eras
+
+**This is v2.2 - balance will evolve!** If your favorite team feels nerfed or a matchup seems unfair, [open an issue](https://github.com/raym26/classic-nba-simulator-text-game/issues) and let's discuss. The goal is accuracy and fairness, which requires ongoing refinement.
+
+**Transparency:** All balance adjustments are visible in the code (basketball_sim_v2.py). You can see exactly how era penalties/bonuses work and suggest improvements.
+
 ## Game Modes
 
 ### 1. Interactive Mode (User vs Computer) ⭐ NEW!
