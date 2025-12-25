@@ -50,6 +50,10 @@ game_sims.txt
 sim_data.xlsx
 player_stats_web_data.xlsx
 
+# Private strategy documents
+MONETIZATION_STRATEGY.md
+INTERNAL_NOTES.md
+
 # Backups
 *_backup.csv
 *_backup*.csv

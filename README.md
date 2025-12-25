@@ -1,4 +1,4 @@
-# Classic NBA Text Basketball Simulator
+# Classic NBA Text Basketball Simulator v2.3
 
 A nostalgic text-based basketball simulation game featuring cross-era matchups!
 
@@ -197,11 +197,36 @@ The simulator uses intelligent minute management:
 - **Role Players (12-19 MPG):** Matchup-dependent (±4.0 min variance)
 - **Deep Bench (<12 MPG):** High variance (±5.0 min variance)
 
-Starting lineups are determined by PPG, ensuring top scorers get priority regardless of CSV order.
+Starting lineups are determined by MPG (minutes per game), ensuring rotation players start regardless of scoring output.
 
 ## Recent Improvements
 
-### v2.2 (Latest - MVP Release)
+### v2.3 (Latest - Balance & Strategy Update)
+🎯 **Instant Sim Engine Overhaul** - Replaced mathematical instant sim with silent live sim
+  - Fixed modern team dominance (Celtics went from 21-1, 135 PPG to 15-7, 107 PPG)
+  - Any championship team can now win different seasons
+  - 90s teams competitive (1993 Bulls won championship in test season!)
+  - Same balanced gameplay as live sim, just without UI
+
+🧠 **Playmaker Value System** - High-assist players now boost teammate shooting
+  - Magic Johnson (11.2 APG) → +3.5% shooting boost to teammates
+  - John Stockton (10.5 APG) → +3.2% boost
+  - Jason Kidd (9.2 APG) → +2.8% boost
+  - Makes team construction strategic (scorers vs playmakers)
+
+👥 **Starting Lineup Fix** - Changed from PPG to MPG selection
+  - Rotation players (Boris Diaw, Jason Kidd) now start games
+  - Fixed DNP issues for high-minute, low-scoring players
+  - More realistic (starters = who plays most, not who scores most)
+
+⚖️ **Rotation Improvements** - Increased restricted rotations from top 8 → top 10
+  - Comeback mode, close games, crunch time all use top 10 now
+  - 7th-10th men get proper playing time
+
+🐛 **Bug Fixes**
+  - Fixed putback possession bug (possession now switches after putback scores)
+
+### v2.2 (MVP Release)
 ✅ **Interactive Mode (User vs Computer)** - Full gameplay with manual control
   - Choose your team and opponent
   - Select starting lineup

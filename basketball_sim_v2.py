@@ -4,6 +4,8 @@ Classic NBA Text Basketball Simulation
 A nostalgic recreation of text-based basketball games
 """
 
+VERSION = "2.3.0"
+
 import random
 import time
 import csv
@@ -54,8 +56,12 @@ class Player:
     points: int = 0
     rebounds: int = 0
     assists: int = 0
-    fga: int = 0  # Field goal attempts
-    fgm: int = 0  # Field goals made
+    fga: int = 0  # Field goal attempts (total)
+    fgm: int = 0  # Field goals made (total)
+    two_pta: int = 0  # Two-point attempts
+    two_ptm: int = 0  # Two-point makes
+    three_pta: int = 0  # Three-point attempts
+    three_ptm: int = 0  # Three-point makes
     ftm: int = 0  # Free throws made
     fta: int = 0  # Free throw attempts
     fouls: int = 0  # Personal fouls (0-6, foul out at 6)
@@ -65,23 +71,51 @@ class Player:
     minutes_played: float = 0.0  # Minutes played in current game
     game_target_minutes: float = 0.0  # Target minutes for this specific game (sampled from distribution)
     
-    def attempt_shot(self, def_rating: float = 1.0) -> bool:
-        """Attempt a two-point field goal based on player's shooting percentage"""
+    def attempt_shot(self, def_rating: float = 1.0, passer = None) -> bool:
+        """Attempt a two-point field goal based on player's shooting percentage
+
+        Args:
+            def_rating: Defensive modifier (lower = better defense)
+            passer: Optional Player who assisted (boosts shooting % based on APG)
+        """
         self.fga += 1
+        self.two_pta += 1  # Track 2PT attempts separately
         effective_pct = self.two_pt_pct * def_rating
+
+        # PLAYMAKER BOOST: Good passers find better shots for teammates
+        # +0.3% per APG, capped at 3.5% (elite playmakers like Magic, Stockton, Kidd)
+        if passer:
+            playmaker_boost = 1.0 + min(passer.apg * 0.003, 0.035)
+            effective_pct *= playmaker_boost
+
         made = random.random() * 100 < effective_pct
         if made:
             self.fgm += 1
+            self.two_ptm += 1  # Track 2PT makes separately
             self.points += 2
         return made
 
-    def attempt_three(self, def_rating: float = 1.0) -> bool:
-        """Attempt a three-pointer based on player's three-point percentage"""
+    def attempt_three(self, def_rating: float = 1.0, passer = None) -> bool:
+        """Attempt a three-pointer based on player's three-point percentage
+
+        Args:
+            def_rating: Defensive modifier (lower = better defense)
+            passer: Optional Player who assisted (boosts shooting % based on APG)
+        """
         self.fga += 1
+        self.three_pta += 1  # Track 3PT attempts separately
         effective_pct = self.three_pt_pct * def_rating
+
+        # PLAYMAKER BOOST: Good passers find better shots for teammates
+        # +0.3% per APG, capped at 3.5% (elite playmakers like Magic, Stockton, Kidd)
+        if passer:
+            playmaker_boost = 1.0 + min(passer.apg * 0.003, 0.035)
+            effective_pct *= playmaker_boost
+
         made = random.random() * 100 < effective_pct
         if made:
             self.fgm += 1
+            self.three_ptm += 1  # Track 3PT makes separately
             self.points += 3
         return made
     
@@ -109,6 +143,10 @@ class Player:
         self.assists = 0
         self.fga = 0
         self.fgm = 0
+        self.two_pta = 0
+        self.two_ptm = 0
+        self.three_pta = 0
+        self.three_ptm = 0
         self.ftm = 0
         self.fta = 0
         self.fouls = 0
@@ -153,17 +191,30 @@ class Team:
     def reset_for_new_game(self):
         """Reset all stats and lineup for a new game"""
         # Reset all player stats
+        # STAR PROTECTION: Identify top 3 scorers for tighter variance
+        top_3_ppg_threshold = sorted([p.ppg for p in self.players], reverse=True)[2] if len(self.players) >= 3 else 0
+
         for player in self.players:
             player.reset_stats()
             # Sample game-specific target minutes from normal distribution
             std_dev = self.get_minutes_std_dev(player.minutes_pg)
             # Sample from N(minutes_pg, std_dev), clamped to reasonable bounds
             sampled_minutes = random.gauss(player.minutes_pg, std_dev)
-            # Clamp between 0 and 48 minutes
-            player.game_target_minutes = max(0, min(48, sampled_minutes))
-        # Reset to starting lineup (top 5 by PPG)
-        player_indices = [(i, p.ppg) for i, p in enumerate(self.players)]
-        player_indices.sort(key=lambda x: -x[1])  # Sort by PPG descending
+
+            # STAR PROTECTION: Top 3 scorers get tighter variance (90%-110% instead of 85%-115%)
+            # This prevents Duncan from getting 21-minute games
+            is_star = player.ppg >= top_3_ppg_threshold
+            if is_star:
+                min_allowed = player.minutes_pg * 0.90  # Stars: 90% minimum (tighter floor)
+                max_allowed = min(48, player.minutes_pg * 1.10)  # Stars: 110% maximum (tighter ceiling)
+            else:
+                min_allowed = player.minutes_pg * 0.85  # Role players: 85% minimum
+                max_allowed = min(48, player.minutes_pg * 1.15)  # Role players: 115% maximum
+
+            player.game_target_minutes = max(min_allowed, min(max_allowed, sampled_minutes))
+        # Reset to starting lineup (top 5 by MPG - ensures rotation players start)
+        player_indices = [(i, p.minutes_pg) for i, p in enumerate(self.players)]
+        player_indices.sort(key=lambda x: -x[1])  # Sort by MPG descending
         self.on_court_indices = [idx for idx, _ in player_indices[:5]]
         # Reset team score and fouls
         self.score = 0
@@ -178,6 +229,10 @@ class Team:
         totals = {
             'fgm': 0,
             'fga': 0,
+            'two_ptm': 0,
+            'two_pta': 0,
+            'three_ptm': 0,
+            'three_pta': 0,
             'ftm': 0,
             'fta': 0,
             'reb': 0,
@@ -190,6 +245,10 @@ class Team:
         for player in self.players:
             totals['fgm'] += player.fgm
             totals['fga'] += player.fga
+            totals['two_ptm'] += player.two_ptm
+            totals['two_pta'] += player.two_pta
+            totals['three_ptm'] += player.three_ptm
+            totals['three_pta'] += player.three_pta
             totals['ftm'] += player.ftm
             totals['fta'] += player.fta
             totals['reb'] += player.rebounds
@@ -200,6 +259,8 @@ class Team:
 
         # Calculate percentages
         totals['fg_pct'] = (totals['fgm'] / totals['fga'] * 100) if totals['fga'] > 0 else 0.0
+        totals['two_pt_pct'] = (totals['two_ptm'] / totals['two_pta'] * 100) if totals['two_pta'] > 0 else 0.0
+        totals['three_pt_pct'] = (totals['three_ptm'] / totals['three_pta'] * 100) if totals['three_pta'] > 0 else 0.0
         totals['ft_pct'] = (totals['ftm'] / totals['fta'] * 100) if totals['fta'] > 0 else 0.0
 
         return totals
@@ -323,7 +384,8 @@ class Team:
         for idx in self.on_court_indices:
             self.players[idx].minutes_played += minutes
 
-    def time_based_substitutions(self, game_minutes_elapsed: float, restrict_to_top: int = None):
+    def time_based_substitutions(self, game_minutes_elapsed: float, restrict_to_top: int = None,
+                                 my_score: int = 0, opponent_score: int = 0):
         """Perform substitutions based on game flow and player usage
 
         Strategy:
@@ -331,16 +393,36 @@ class Team:
         - Sub out players who are ahead of their minute pace
         - Bring in players who are behind their minute pace
         - This creates natural rotation waves like real NBA games
+        - COMEBACK MODE: If losing by 8+ after halftime, shorten rotation to top players
 
         Args:
             game_minutes_elapsed: Total game time elapsed
             restrict_to_top: If set, only substitute within top N players by PPG (for crunch time)
+            my_score: Current team score (for comeback urgency)
+            opponent_score: Opponent's current score
         """
         # Calculate expected usage at this point in the game (0.0 to 1.0)
         # 48-minute game, so at 12 minutes elapsed = 25% through game
         game_progress = game_minutes_elapsed / 48.0
 
-        # Get restricted player pool if in crunch time
+        # COMEBACK URGENCY LOGIC - shorten rotation when losing
+        score_diff = my_score - opponent_score  # Negative if losing
+        time_remaining = 48.0 - game_minutes_elapsed
+
+        # If losing by 8+ after halftime, go into comeback mode
+        if score_diff <= -8 and game_progress >= 0.5:
+            # Blowout with little time left - rest starters (down 20+ with <5 min)
+            if score_diff <= -20 and time_remaining < 5:
+                pass  # Keep normal rotation, game is over
+            else:
+                # Comeback mode: Use top 10 players (gives 7th-10th men a chance)
+                restrict_to_top = 10 if restrict_to_top is None else min(restrict_to_top, 10)
+
+        # Close game in 4th quarter - tighten to top 10
+        elif abs(score_diff) <= 6 and game_progress >= 0.75:
+            restrict_to_top = 10 if restrict_to_top is None else restrict_to_top
+
+        # Get restricted player pool if in crunch time or comeback mode
         if restrict_to_top:
             allowed_indices = set(self.get_top_players(restrict_to_top, avoid_foul_trouble=True))
         else:
@@ -353,6 +435,10 @@ class Team:
             if player.game_target_minutes == 0:
                 continue
 
+            # STAR PROTECTION: Never sub out top 3 scorers unless way ahead of pace or foul trouble
+            # This prevents Duncan from sitting while 3rd-string centers play
+            is_star = player.ppg >= sorted([p.ppg for p in self.players], reverse=True)[2]  # Top 3 by PPG
+
             # How much of their target minutes should they have played by now?
             expected_minutes = player.game_target_minutes * game_progress
 
@@ -362,6 +448,10 @@ class Team:
                 buffer = 0.5
             else:  # 4th quarter - tighter rotation
                 buffer = 1.5
+
+            # Stars need bigger buffer (2-3 min ahead) before subbing out
+            if is_star:
+                buffer += 2.0  # Stars need to be 2-3 min ahead before subbing
 
             if player.minutes_played > expected_minutes + buffer:
                 players_to_sub_out.append((i, player_idx, player.minutes_played - expected_minutes))
@@ -496,7 +586,7 @@ class Team:
 class GameSimulation:
     """Simulates a basketball game"""
 
-    def __init__(self, team1: Team, team2: Team, game_speed: float = 0.5):
+    def __init__(self, team1: Team, team2: Team, game_speed: float = 0.5, silent_mode: bool = False):
         self.team1 = team1
         self.team2 = team2
         self.quarter = 1
@@ -504,6 +594,7 @@ class GameSimulation:
         self.possession = team1
         self.play_by_play: List[str] = []
         self.game_speed = game_speed  # Seconds between plays
+        self.silent_mode = silent_mode  # If True, skip all UI/console output (for fast season sim)
         self.quarter_scores = {
             'team1': [],  # Will store score at end of each quarter
             'team2': []
@@ -699,9 +790,14 @@ class GameSimulation:
         def_rating = defending_team.def_rating
 
         # Decide shot type (use team-specific three-point rate)
+        # BUT only if shooter can actually shoot 3s (three_pt_pct > 0)
         three_rate = self.possession.three_pt_rate
         two_rate = 1.0 - three_rate
         shot_type = random.choices(['two', 'three'], weights=[two_rate, three_rate])[0]
+
+        # Force 2PT if shooter can't shoot 3s (prevents Wilt, Duncan, Kareem from bricking 3s)
+        if shot_type == 'three' and shooter.three_pt_pct == 0:
+            shot_type = 'two'
 
         if shot_type == 'three':
             plays.append(f"{shooter.name} shoots a three-pointer...")
@@ -716,7 +812,8 @@ class GameSimulation:
                 made = False
                 fouled = False  # Can't foul on a clean block
             else:
-                made = shooter.attempt_three(def_rating)
+                # Pass last_passer for playmaker boost (if there were passes)
+                made = shooter.attempt_three(def_rating, passer=last_passer if num_passes > 0 else None)
 
                 # Check for foul (weighted by FTA per game)
                 foul_probability = min(0.3, shooter.fta_pg * 0.02)
@@ -792,7 +889,8 @@ class GameSimulation:
                 made = False
                 fouled = False  # Can't foul on a clean block
             else:
-                made = shooter.attempt_shot(def_rating)
+                # Pass last_passer for playmaker boost (if there were passes)
+                made = shooter.attempt_shot(def_rating, passer=last_passer if num_passes > 0 else None)
 
                 # Check for foul (weighted by FTA per game)
                 foul_probability = min(0.3, shooter.fta_pg * 0.02)
@@ -967,8 +1065,9 @@ class GameSimulation:
     
     def simulate_quarter(self):
         """Simulate one quarter of basketball"""
-        console.print(f"\n[bold]Quarter {self.quarter}[/bold]")
-        time.sleep(1)
+        if not self.silent_mode:
+            console.print(f"\n[bold]Quarter {self.quarter}[/bold]")
+            time.sleep(1)
 
         # Reset team fouls at start of each quarter
         self.team1.reset_quarter_fouls()
@@ -976,12 +1075,12 @@ class GameSimulation:
 
         # Bring starters back at start of Q3 (after halftime)
         if self.quarter == 3:
-            # Use PPG-based starting lineup (same logic as game start)
-            team1_starters = [(i, p.ppg) for i, p in enumerate(self.team1.players)]
+            # Use MPG-based starting lineup (ensures rotation players start)
+            team1_starters = [(i, p.minutes_pg) for i, p in enumerate(self.team1.players)]
             team1_starters.sort(key=lambda x: -x[1])
             self.team1.on_court_indices = [idx for idx, _ in team1_starters[:5]]
 
-            team2_starters = [(i, p.ppg) for i, p in enumerate(self.team2.players)]
+            team2_starters = [(i, p.minutes_pg) for i, p in enumerate(self.team2.players)]
             team2_starters.sort(key=lambda x: -x[1])
             self.team2.on_court_indices = [idx for idx, _ in team2_starters[:5]]
 
@@ -992,6 +1091,96 @@ class GameSimulation:
         possession_count = 0
         closing_lineup_set = False  # Track if we've locked in closing lineup
 
+        # Silent mode: skip UI entirely for fast season simulation
+        if self.silent_mode:
+            self._simulate_quarter_silent(sub_windows_hit, possession_count, closing_lineup_set)
+        else:
+            self._simulate_quarter_with_ui(sub_windows_hit, possession_count, closing_lineup_set)
+
+    def _simulate_quarter_silent(self, sub_windows_hit, possession_count, closing_lineup_set):
+        """Fast simulation without UI (for season mode)"""
+        while self.time_remaining > 0:
+            # Check for clutch time
+            is_clutch, phase = self.is_clutch_time()
+
+            if is_clutch and phase == "closing":
+                # CLOSING LINEUP (3:00 or less) - Best 5 locked in
+                if not closing_lineup_set:
+                    if self.team1 != self.manual_control_team:
+                        self.team1.on_court_indices = self.team1.get_top_players(5, avoid_foul_trouble=True)[:5]
+                    if self.team2 != self.manual_control_team:
+                        self.team2.on_court_indices = self.team2.get_top_players(5, avoid_foul_trouble=True)[:5]
+                    closing_lineup_set = True
+
+            elif is_clutch and phase == "crunch":
+                # CRUNCH TIME (8:00-3:00) - Tighter rotation (top 10 only)
+                if self.time_remaining <= 360 and 360 not in sub_windows_hit:
+                    sub_windows_hit.add(360)
+                    if self.team1 != self.manual_control_team:
+                        self.team1.time_based_substitutions(self.game_minutes_elapsed, restrict_to_top=10,
+                                                           my_score=self.team1.score, opponent_score=self.team2.score)
+                    if self.team2 != self.manual_control_team:
+                        self.team2.time_based_substitutions(self.game_minutes_elapsed, restrict_to_top=10,
+                                                           my_score=self.team2.score, opponent_score=self.team1.score)
+
+            else:
+                # NORMAL TIME - Regular substitution windows
+                if self.time_remaining <= 360 and 360 not in sub_windows_hit:
+                    sub_windows_hit.add(360)
+                    if self.team1 != self.manual_control_team:
+                        self.team1.time_based_substitutions(self.game_minutes_elapsed,
+                                                           my_score=self.team1.score, opponent_score=self.team2.score)
+                    if self.team2 != self.manual_control_team:
+                        self.team2.time_based_substitutions(self.game_minutes_elapsed,
+                                                           my_score=self.team2.score, opponent_score=self.team1.score)
+
+                if self.time_remaining <= 180 and 180 not in sub_windows_hit:
+                    sub_windows_hit.add(180)
+                    if self.team1 != self.manual_control_team:
+                        self.team1.time_based_substitutions(self.game_minutes_elapsed,
+                                                           my_score=self.team1.score, opponent_score=self.team2.score)
+                    if self.team2 != self.manual_control_team:
+                        self.team2.time_based_substitutions(self.game_minutes_elapsed,
+                                                           my_score=self.team2.score, opponent_score=self.team1.score)
+
+            # Simulate possession
+            min_time, max_time = self.get_era_possession_time(self.possession.year)
+            base_time = random.randint(min_time, max_time)
+            possession_time = int(base_time / self.possession.pace_rating)
+
+            play_desc, scored = self.simulate_possession()
+            # Still track play-by-play for potential post-game review
+            self.play_by_play.append(play_desc)
+
+            # Update minutes played for both teams
+            self.team1.update_minutes(possession_time)
+            self.team2.update_minutes(possession_time)
+            self.game_minutes_elapsed += possession_time / 60.0
+
+            # Check for foul outs
+            self.team1.check_foul_outs()
+            self.team2.check_foul_outs()
+
+            # Emergency substitution check
+            if phase != "closing":
+                possession_count += 1
+                if possession_count % 5 == 0:
+                    self.team1.check_substitutions()
+                    self.team2.check_substitutions()
+
+            # Switch possession (always switch after a score, even on putbacks)
+            if scored or ("Offensive rebound" not in play_desc and "retains possession" not in play_desc):
+                self.possession = self.team2 if self.possession == self.team1 else self.team1
+
+            # Update time
+            self.time_remaining = max(0, self.time_remaining - possession_time)
+
+        # Record scores at end of quarter (silent mode)
+        self.quarter_scores['team1'].append(self.team1.score)
+        self.quarter_scores['team2'].append(self.team2.score)
+
+    def _simulate_quarter_with_ui(self, sub_windows_hit, possession_count, closing_lineup_set):
+        """Standard simulation with live UI display"""
         with Live(self.create_display(), refresh_per_second=4) as live:
             while self.time_remaining > 0:
                 # Check for clutch time
@@ -1009,15 +1198,17 @@ class GameSimulation:
                     # Skip all normal substitution logic (closing 5 stay in)
 
                 elif is_clutch and phase == "crunch":
-                    # CRUNCH TIME (8:00-3:00) - Tighter rotation (top 7-8 only)
-                    # Allow time-based subs but restrict pool to top 7-8 players
+                    # CRUNCH TIME (8:00-3:00) - Tighter rotation (top 10 only)
+                    # Allow time-based subs but restrict pool to top 10 players
                     if self.time_remaining <= 360 and 360 not in sub_windows_hit:
                         sub_windows_hit.add(360)
-                        # Restricted substitution using top 8 players
+                        # Restricted substitution using top 10 players
                         if self.team1 != self.manual_control_team:
-                            self.team1.time_based_substitutions(self.game_minutes_elapsed, restrict_to_top=8)
+                            self.team1.time_based_substitutions(self.game_minutes_elapsed, restrict_to_top=10,
+                                                               my_score=self.team1.score, opponent_score=self.team2.score)
                         if self.team2 != self.manual_control_team:
-                            self.team2.time_based_substitutions(self.game_minutes_elapsed, restrict_to_top=8)
+                            self.team2.time_based_substitutions(self.game_minutes_elapsed, restrict_to_top=10,
+                                                               my_score=self.team2.score, opponent_score=self.team1.score)
 
                     # No 3:00 sub window in crunch time (handled by closing lineup above)
 
@@ -1027,17 +1218,21 @@ class GameSimulation:
                         # 6:00 mark - first substitution wave
                         sub_windows_hit.add(360)
                         if self.team1 != self.manual_control_team:
-                            self.team1.time_based_substitutions(self.game_minutes_elapsed)
+                            self.team1.time_based_substitutions(self.game_minutes_elapsed,
+                                                               my_score=self.team1.score, opponent_score=self.team2.score)
                         if self.team2 != self.manual_control_team:
-                            self.team2.time_based_substitutions(self.game_minutes_elapsed)
+                            self.team2.time_based_substitutions(self.game_minutes_elapsed,
+                                                               my_score=self.team2.score, opponent_score=self.team1.score)
 
                     if self.time_remaining <= 180 and 180 not in sub_windows_hit:
                         # 3:00 mark - second substitution wave
                         sub_windows_hit.add(180)
                         if self.team1 != self.manual_control_team:
-                            self.team1.time_based_substitutions(self.game_minutes_elapsed)
+                            self.team1.time_based_substitutions(self.game_minutes_elapsed,
+                                                               my_score=self.team1.score, opponent_score=self.team2.score)
                         if self.team2 != self.manual_control_team:
-                            self.team2.time_based_substitutions(self.game_minutes_elapsed)
+                            self.team2.time_based_substitutions(self.game_minutes_elapsed,
+                                                               my_score=self.team2.score, opponent_score=self.team1.score)
 
                 # Simulate possession (era-specific base time, adjusted by team pace rating)
                 min_time, max_time = self.get_era_possession_time(self.possession.year)
@@ -1069,8 +1264,8 @@ class GameSimulation:
                         self.team1.check_substitutions()
                         self.team2.check_substitutions()
 
-                # Switch possession (unless offensive rebound or retained possession)
-                if "Offensive rebound" not in play_desc and "retains possession" not in play_desc:
+                # Switch possession (always switch after a score, even on putbacks)
+                if scored or ("Offensive rebound" not in play_desc and "retains possession" not in play_desc):
                     self.possession = self.team2 if self.possession == self.team1 else self.team1
 
                 # Update time
@@ -1084,10 +1279,11 @@ class GameSimulation:
         self.quarter_scores['team1'].append(self.team1.score)
         self.quarter_scores['team2'].append(self.team2.score)
 
-        # Clear screen before showing quarter summary
-        console.clear()
-        console.print(f"[bold green]End of Quarter {self.quarter}[/bold green]")
-        console.print(f"Score: {self.team1.name} {self.team1.score} - {self.team2.name} {self.team2.score}\n")
+        # Clear screen before showing quarter summary (with UI mode only)
+        if not self.silent_mode:
+            console.clear()
+            console.print(f"[bold green]End of Quarter {self.quarter}[/bold green]")
+            console.print(f"Score: {self.team1.name} {self.team1.score} - {self.team2.name} {self.team2.score}\n")
     
     def simulate_game(self):
         """Simulate a full 4-quarter game with overtime if needed"""
@@ -1096,40 +1292,43 @@ class GameSimulation:
             self.time_remaining = 720
             self.simulate_quarter()
 
-            if q < 4:
+            if q < 4 and not self.silent_mode:
                 time.sleep(2)  # Brief pause between quarters
 
         # Check for overtime
         ot_count = 0
         while self.team1.score == self.team2.score:
             ot_count += 1
-            console.print(f"\n[bold yellow]OVERTIME {ot_count}![/bold yellow]")
-            console.print(f"Score tied at {self.team1.score}-{self.team2.score}\n")
-            time.sleep(2)
+            if not self.silent_mode:
+                console.print(f"\n[bold yellow]OVERTIME {ot_count}![/bold yellow]")
+                console.print(f"Score tied at {self.team1.score}-{self.team2.score}\n")
+                time.sleep(2)
 
             self.quarter = f"OT{ot_count}"
             self.time_remaining = 300  # 5 minutes for OT
             self.simulate_quarter()
-            time.sleep(2)
+            if not self.silent_mode:
+                time.sleep(2)
 
-        # Final score
-        console.print("\n" + "="*60)
-        if ot_count > 0:
-            console.print(f"[bold magenta]FINAL SCORE ({ot_count} OT)[/bold magenta]")
-        else:
-            console.print("[bold magenta]FINAL SCORE[/bold magenta]")
-        console.print("="*60)
+        # Final score (skip in silent mode)
+        if not self.silent_mode:
+            console.print("\n" + "="*60)
+            if ot_count > 0:
+                console.print(f"[bold magenta]FINAL SCORE ({ot_count} OT)[/bold magenta]")
+            else:
+                console.print("[bold magenta]FINAL SCORE[/bold magenta]")
+            console.print("="*60)
 
-        if self.team1.score > self.team2.score:
-            console.print(f"[bold green]{self.team1.name} defeats {self.team2.name}![/bold green]")
-        else:
-            console.print(f"[bold green]{self.team2.name} defeats {self.team1.name}![/bold green]")
+            if self.team1.score > self.team2.score:
+                console.print(f"[bold green]{self.team1.name} defeats {self.team2.name}![/bold green]")
+            else:
+                console.print(f"[bold green]{self.team2.name} defeats {self.team1.name}![/bold green]")
 
-        console.print(f"\n[cyan]{self.team1.name}: {self.team1.score}[/cyan]")
-        console.print(f"[yellow]{self.team2.name}: {self.team2.score}[/yellow]\n")
+            console.print(f"\n[cyan]{self.team1.name}: {self.team1.score}[/cyan]")
+            console.print(f"[yellow]{self.team2.name}: {self.team2.score}[/yellow]\n")
 
-        # Show combined box score
-        self.show_box_score()
+            # Show combined box score
+            self.show_box_score()
 
     def show_box_score(self):
         """Display combined box score with quarter scores, team totals, and player stats"""
@@ -1167,10 +1366,9 @@ class GameSimulation:
                 summary_table.add_column(f"OT{i-3}", justify="right", style="yellow")
 
         summary_table.add_column("Final", justify="right", style="bold green")
-        summary_table.add_column("FG", justify="right")
-        summary_table.add_column("FG%", justify="right")
+        summary_table.add_column("2PT", justify="right")
+        summary_table.add_column("3PT", justify="right")
         summary_table.add_column("FT", justify="right")
-        summary_table.add_column("FT%", justify="right")
         summary_table.add_column("REB", justify="right")
         summary_table.add_column("AST", justify="right")
         summary_table.add_column("STL", justify="right")
@@ -1180,10 +1378,9 @@ class GameSimulation:
         # Team 1 row
         team1_row = [self.team1.name] + [str(pts) for pts in team1_quarter_pts] + [
             str(self.team1.score),
-            f"{team1_totals['fgm']}/{team1_totals['fga']}",
-            f"{team1_totals['fg_pct']:.1f}",
+            f"{team1_totals['two_ptm']}/{team1_totals['two_pta']}",
+            f"{team1_totals['three_ptm']}/{team1_totals['three_pta']}",
             f"{team1_totals['ftm']}/{team1_totals['fta']}",
-            f"{team1_totals['ft_pct']:.1f}",
             str(team1_totals['reb']),
             str(team1_totals['ast']),
             str(team1_totals['stl']),
@@ -1194,10 +1391,9 @@ class GameSimulation:
         # Team 2 row
         team2_row = [self.team2.name] + [str(pts) for pts in team2_quarter_pts] + [
             str(self.team2.score),
-            f"{team2_totals['fgm']}/{team2_totals['fga']}",
-            f"{team2_totals['fg_pct']:.1f}",
+            f"{team2_totals['two_ptm']}/{team2_totals['two_pta']}",
+            f"{team2_totals['three_ptm']}/{team2_totals['three_pta']}",
             f"{team2_totals['ftm']}/{team2_totals['fta']}",
-            f"{team2_totals['ft_pct']:.1f}",
             str(team2_totals['reb']),
             str(team2_totals['ast']),
             str(team2_totals['stl']),
@@ -1270,12 +1466,12 @@ class GameSimulation:
         stats_table.add_column("STL", justify="right")
         stats_table.add_column("BLK", justify="right")
         stats_table.add_column("TO", justify="right")
-        stats_table.add_column("FG", justify="right")
-        stats_table.add_column("FG%", justify="right")
+        stats_table.add_column("2PT", justify="right")
+        stats_table.add_column("3PT", justify="right")
+        stats_table.add_column("FT", justify="right")
         stats_table.add_column("PF", justify="right")
 
         for player in team.players:  # Show all players
-            fg_pct = f"{(player.fgm / player.fga * 100):.1f}" if player.fga > 0 else "0.0"
             mins = f"{int(player.minutes_played)}"
             # Highlight fouled out players
             foul_str = f"[bold red]{player.fouls}[/bold red]" if player.fouls >= 6 else str(player.fouls)
@@ -1288,8 +1484,9 @@ class GameSimulation:
                 str(player.steals),
                 str(player.blocks),
                 str(player.turnovers),
-                f"{player.fgm}/{player.fga}",
-                fg_pct,
+                f"{player.two_ptm}/{player.two_pta}",
+                f"{player.three_ptm}/{player.three_pta}",
+                f"{player.ftm}/{player.fta}",
                 foul_str
             )
 
@@ -1938,14 +2135,14 @@ class InteractiveGame(GameSimulation):
         self.team1.reset_quarter_fouls()
         self.team2.reset_quarter_fouls()
 
-        # Q3 reset (use PPG-based starters)
+        # Q3 reset (use MPG-based starters)
         if self.quarter == 3:
-            team1_starters = [(i, p.ppg) for i, p in enumerate(self.team1.players)]
+            team1_starters = [(i, p.minutes_pg) for i, p in enumerate(self.team1.players)]
             team1_starters.sort(key=lambda x: -x[1])
             # PRESERVE user's manual starting lineup selection
-            # (Don't override with PPG - they chose their lineup intentionally)
+            # (Don't override with MPG - they chose their lineup intentionally)
 
-            team2_starters = [(i, p.ppg) for i, p in enumerate(self.team2.players)]
+            team2_starters = [(i, p.minutes_pg) for i, p in enumerate(self.team2.players)]
             team2_starters.sort(key=lambda x: -x[1])
             self.team2.on_court_indices = [idx for idx, _ in team2_starters[:5]]
 
@@ -2101,10 +2298,9 @@ class InteractiveGame(GameSimulation):
         summary_table.add_column("Q1", justify="right")
         summary_table.add_column("Q2", justify="right")
         summary_table.add_column("Half", justify="right", style="bold green")
-        summary_table.add_column("FG", justify="right")
-        summary_table.add_column("FG%", justify="right")
+        summary_table.add_column("2PT", justify="right")
+        summary_table.add_column("3PT", justify="right")
         summary_table.add_column("FT", justify="right")
-        summary_table.add_column("FT%", justify="right")
         summary_table.add_column("REB", justify="right")
         summary_table.add_column("AST", justify="right")
         summary_table.add_column("STL", justify="right")
@@ -2117,10 +2313,9 @@ class InteractiveGame(GameSimulation):
             str(team1_q1),
             str(team1_q2),
             str(self.team1.score),
-            f"{team1_totals['fgm']}/{team1_totals['fga']}",
-            f"{team1_totals['fg_pct']:.1f}",
+            f"{team1_totals['two_ptm']}/{team1_totals['two_pta']}",
+            f"{team1_totals['three_ptm']}/{team1_totals['three_pta']}",
             f"{team1_totals['ftm']}/{team1_totals['fta']}",
-            f"{team1_totals['ft_pct']:.1f}",
             str(team1_totals['reb']),
             str(team1_totals['ast']),
             str(team1_totals['stl']),
@@ -2134,10 +2329,9 @@ class InteractiveGame(GameSimulation):
             str(team2_q1),
             str(team2_q2),
             str(self.team2.score),
-            f"{team2_totals['fgm']}/{team2_totals['fga']}",
-            f"{team2_totals['fg_pct']:.1f}",
+            f"{team2_totals['two_ptm']}/{team2_totals['two_pta']}",
+            f"{team2_totals['three_ptm']}/{team2_totals['three_pta']}",
             f"{team2_totals['ftm']}/{team2_totals['fta']}",
-            f"{team2_totals['ft_pct']:.1f}",
             str(team2_totals['reb']),
             str(team2_totals['ast']),
             str(team2_totals['stl']),
@@ -2171,12 +2365,12 @@ class InteractiveGame(GameSimulation):
         stats_table.add_column("STL", justify="right")
         stats_table.add_column("BLK", justify="right")
         stats_table.add_column("TO", justify="right")
-        stats_table.add_column("FG", justify="right")
-        stats_table.add_column("FG%", justify="right")
+        stats_table.add_column("2PT", justify="right")
+        stats_table.add_column("3PT", justify="right")
+        stats_table.add_column("FT", justify="right")
         stats_table.add_column("PF", justify="right")
 
         for player in team.players:  # Show all players
-            fg_pct = f"{(player.fgm / player.fga * 100):.1f}" if player.fga > 0 else "0.0"
             mins = f"{int(player.minutes_played)}"
             # Highlight players in foul trouble
             foul_str = f"[bold red]{player.fouls}[/bold red]" if player.fouls >= 3 else str(player.fouls)
@@ -2189,8 +2383,9 @@ class InteractiveGame(GameSimulation):
                 str(player.steals),
                 str(player.blocks),
                 str(player.turnovers),
-                f"{player.fgm}/{player.fga}",
-                fg_pct,
+                f"{player.two_ptm}/{player.two_pta}",
+                f"{player.three_ptm}/{player.three_pta}",
+                f"{player.ftm}/{player.fta}",
                 foul_str
             )
 
@@ -2382,6 +2577,10 @@ class Season:
                     'total_fouls': 0,
                     'total_fgm': 0,
                     'total_fga': 0,
+                    'total_two_ptm': 0,
+                    'total_two_pta': 0,
+                    'total_three_ptm': 0,
+                    'total_three_pta': 0,
                     'total_ftm': 0,
                     'total_fta': 0,
                     'total_minutes': 0.0,
@@ -2391,6 +2590,8 @@ class Season:
                     'apg': 0.0,
                     'mpg': 0.0,
                     'fg_pct': 0.0,
+                    'two_pt_pct': 0.0,
+                    'three_pt_pct': 0.0,
                     'ft_pct': 0.0
                 }
 
@@ -2410,6 +2611,10 @@ class Season:
             stats['total_fouls'] += player.fouls
             stats['total_fgm'] += player.fgm
             stats['total_fga'] += player.fga
+            stats['total_two_ptm'] += player.two_ptm
+            stats['total_two_pta'] += player.two_pta
+            stats['total_three_ptm'] += player.three_ptm
+            stats['total_three_pta'] += player.three_pta
             stats['total_ftm'] += player.ftm
             stats['total_fta'] += player.fta
             stats['total_minutes'] += player.minutes_played
@@ -2421,6 +2626,8 @@ class Season:
             stats['apg'] = stats['total_ast'] / games
             stats['mpg'] = stats['total_minutes'] / games
             stats['fg_pct'] = (stats['total_fgm'] / stats['total_fga'] * 100) if stats['total_fga'] > 0 else 0.0
+            stats['two_pt_pct'] = (stats['total_two_ptm'] / stats['total_two_pta'] * 100) if stats['total_two_pta'] > 0 else 0.0
+            stats['three_pt_pct'] = (stats['total_three_ptm'] / stats['total_three_pta'] * 100) if stats['total_three_pta'] > 0 else 0.0
             stats['ft_pct'] = (stats['total_ftm'] / stats['total_fta'] * 100) if stats['total_fta'] > 0 else 0.0
 
     def is_season_complete(self) -> bool:
@@ -2430,159 +2637,27 @@ class Season:
 
 def instant_sim_game(team1: Team, team2: Team):
     """
-    Instantly generate a realistic game result without running possession-by-possession
-    Much faster for bulk simulation
-    Now uses usage rates for realistic shot distribution!
-    Includes era penalty for cross-era matchups (older teams get shooting penalty vs newer teams)
+    Fast simulation using the live sim engine without UI (silent mode)
+
+    This replaces the old mathematical instant sim to ensure competitive balance.
+    User observation: "in single game mode, Spurs challenges high offense teams" but old
+    instant sim showed blowouts (Celtics 135 PPG). This fix uses the same balanced gameplay
+    from live sim but runs silently for speed.
+
+    Inherits all live sim features automatically:
+    - Star protection (top 3 scorers get consistent minutes)
+    - Comeback urgency logic (score-aware substitutions)
+    - Proper rotation management
+    - Natural game friction (turnovers, fouls, variance)
     """
     team1.reset_for_new_game()
     team2.reset_for_new_game()
 
-    # Calculate ERA-BASED ADJUSTMENTS for cross-era matchups
-    # SHOOTING PENALTY: Older teams shoot worse (0.5% per decade, max 3.5%)
-    # DEFENSE BASELINE: Era-based absolute defensive ability (not era-relative)
+    # Use the live sim engine in silent mode (no UI, no delays)
+    game = GameSimulation(team1, team2, game_speed=0.0, silent_mode=True)
+    game.simulate_game()
 
-    # Shooting penalty for older teams
-    year_gap = abs(team1.year - team2.year)
-    shooting_penalty_pct = min(year_gap * 0.05, 3.5)  # 0.5% per decade, capped at 3.5%
-
-    if team1.year < team2.year:
-        team1_shooting_penalty = shooting_penalty_pct / 100.0
-        team2_shooting_penalty = 0.0
-    elif team2.year < team1.year:
-        team1_shooting_penalty = 0.0
-        team2_shooting_penalty = shooting_penalty_pct / 100.0
-    else:
-        team1_shooting_penalty = 0.0
-        team2_shooting_penalty = 0.0
-
-    # Era-based defense baseline adjustments (cross-era absolute ratings)
-    # Ranking: 1) Early 3PT (1980-1999) 2) Slow Pace (2000-2016) 3) Modern (2017+) 4) Pre-3PT (1965-1979)
-    def get_era_defense_adjustment(year):
-        if year < 1980:
-            return 0.08  # Pre-3PT era: Worst (primitive schemes despite physicality)
-        elif year < 2000:
-            return -0.05  # Early 3PT era: Best (hand-checking + sophisticated schemes)
-        elif year < 2017:
-            return 0.00  # Slow Pace era: Baseline (modern schemes, still physical)
-        else:
-            return 0.05  # Modern era: Third (best schemes/athletes, but offensive rules)
-
-    # Apply era adjustments to defense ratings
-    team1_opponent_def = team2.def_rating + get_era_defense_adjustment(team2.year)
-    team2_opponent_def = team1.def_rating + get_era_defense_adjustment(team1.year)
-
-    # Calculate expected possessions - BALANCED PACE
-    # Simple average - both teams influence pace equally
-    actual_pace = (team1.pace_rating + team2.pace_rating) / 2.0
-
-    base_possessions = 95  # Average NBA possessions per team
-    total_possessions = int(base_possessions * actual_pace * random.uniform(0.95, 1.05))
-
-    # Small possession advantage for better defensive teams (force turnovers)
-    team1_possession_bonus = int((1.0 - team1.def_rating) * 2)  # Reduced from 3 to 2
-    team2_possession_bonus = int((1.0 - team2.def_rating) * 2)
-
-    team1_possessions = total_possessions + team1_possession_bonus
-    team2_possessions = total_possessions + team2_possession_bonus
-
-    # Distribute possessions and shots to players based on USAGE RATE
-    def distribute_player_stats(team, opponent_def_rating, team_possessions, era_penalty=0.0):
-        """Distribute stats to players based on usage rate and minutes
-        era_penalty: shooting % reduction for older teams facing newer teams (0.0 to 0.10)
-        """
-        team_total_points = 0
-
-        # First pass: calculate total weighted usage to normalize
-        # This ensures ALL possessions get distributed, even for balanced teams
-        total_weighted_usage = 0.0
-        for player in team.players:
-            if player.minutes_pg > 10:
-                minutes_ratio = min(1.0, player.minutes_pg / 48.0)
-                total_weighted_usage += (player.usage_rate / 100.0) * minutes_ratio
-
-        # Normalize factor - if usage doesn't sum to 100%, boost everyone proportionally
-        usage_normalizer = 1.0 if total_weighted_usage >= 0.95 else (1.0 / total_weighted_usage)
-
-        for player in team.players:
-            if player.minutes_pg > 10:  # Only players with significant minutes
-                # Minutes played (with variance)
-                player.minutes_played = min(48.0, player.minutes_pg * random.uniform(0.9, 1.1))
-                minutes_ratio = player.minutes_played / 48.0
-
-                # Shot attempts based on USAGE RATE (normalized to ensure 100% usage)
-                # Usage rate = % of team possessions used when player is on floor
-                normalized_usage = (player.usage_rate / 100.0) * usage_normalizer
-                player_possessions = normalized_usage * team_possessions * minutes_ratio
-
-                # Estimate shot attempts (not all possessions end in shots - some are assists, turnovers)
-                # Roughly 95% of possessions end in a shot attempt (more aggressive)
-                shot_attempts = int(player_possessions * 0.95 * random.uniform(0.95, 1.05))
-
-                # Split between 2PT and 3PT based on team's three_pt_rate
-                # BUT only if player can actually shoot 3s (three_pt_pct > 0)
-                if player.three_pt_pct > 0:
-                    three_pt_attempts = int(shot_attempts * team.three_pt_rate)
-                    two_pt_attempts = shot_attempts - three_pt_attempts
-                else:
-                    # Player doesn't shoot 3s - all shots are 2-pointers
-                    three_pt_attempts = 0
-                    two_pt_attempts = shot_attempts
-
-                # Apply defense rating to shooting percentages - VERY LIGHT TOUCH
-                # def_rating impact reduced to 25% to prevent over-suppression of scoring
-                base_multiplier = opponent_def_rating
-                def_impact = (base_multiplier - 1.0) * 0.25  # Only 25% of the defensive effect
-                def_multiplier = 1.0 + def_impact
-                # Bulls (0.85): def_impact = (0.85-1.0)*0.25 = -0.0375, multiplier = 0.9625 (3.75% reduction)
-                # Average (1.00): def_impact = 0, multiplier = 1.00 (no change)
-                # Warriors (1.05): def_impact = 0.0125, multiplier = 1.0125 (1.25% easier)
-
-                # Apply era penalty (older teams vs newer teams) and defense
-                effective_2pt_pct = (player.two_pt_pct / 100.0) * def_multiplier * (1.0 - era_penalty)
-                effective_3pt_pct = (player.three_pt_pct / 100.0) * def_multiplier * (1.0 - era_penalty)
-
-                # Calculate makes
-                two_pt_makes = sum(1 for _ in range(two_pt_attempts) if random.random() < effective_2pt_pct)
-                three_pt_makes = sum(1 for _ in range(three_pt_attempts) if random.random() < effective_3pt_pct)
-
-                player.fga = shot_attempts
-                player.fgm = two_pt_makes + three_pt_makes
-
-                # Free throws based on usage and aggression
-                player.fta = int(player.fta_pg * minutes_ratio * random.uniform(0.8, 1.2))
-                player.ftm = sum(1 for _ in range(player.fta) if random.random() < (player.ft_pct / 100.0))
-
-                # Calculate points
-                player.points = (two_pt_makes * 2) + (three_pt_makes * 3) + player.ftm
-                team_total_points += player.points
-
-                # Other stats (scaled by minutes and usage)
-                usage_factor = (player.usage_rate / 20.0)  # Normalize around 20% usage
-                player.rebounds = int(player.rpg * minutes_ratio * random.uniform(0.8, 1.2))
-                player.assists = int(player.apg * minutes_ratio * random.uniform(0.8, 1.2))
-                player.steals = int(random.randint(0, 3) if minutes_ratio > 0.5 else 0)
-                player.blocks = int(random.randint(0, 2) if player.position in ['C', 'PF'] else 0)
-                player.turnovers = int(player_possessions * 0.12 * random.uniform(0.8, 1.2))  # ~12% turnover rate
-                player.fouls = int(minutes_ratio * random.randint(1, 4))
-
-        return team_total_points
-
-    # Distribute stats for both teams (with era penalties applied)
-    # opponent_def includes defense penalty for newer teams vs older teams
-    team1.score = distribute_player_stats(team1, team1_opponent_def, team1_possessions, team1_shooting_penalty)
-    team2.score = distribute_player_stats(team2, team2_opponent_def, team2_possessions, team2_shooting_penalty)
-
-    # Handle ties - add overtime points to one team
-    if team1.score == team2.score:
-        # Random overtime winner, add 3-8 points
-        overtime_points = random.randint(3, 8)
-        if random.random() < 0.5:
-            team1.score += overtime_points
-            team2.score += random.randint(1, overtime_points - 1)
-        else:
-            team2.score += overtime_points
-            team1.score += random.randint(1, overtime_points - 1)
+    # Team scores and player stats are already populated by the simulation
 
 
 def play_season_game_day(season: Season, game_speed: float = 0.6):
@@ -2752,6 +2827,9 @@ def show_stats_leaders(season: Season, stat: str = 'ppg', limit: int = 10):
         'rpg': 'Rebounds Per Game',
         'apg': 'Assists Per Game',
         'fg_pct': 'Field Goal %',
+        'two_pt_pct': '2-Point %',
+        'three_pt_pct': '3-Point %',
+        'ft_pct': 'Free Throw %',
         'mpg': 'Minutes Per Game'
     }
 
@@ -2770,6 +2848,7 @@ def show_stats_leaders(season: Season, stat: str = 'ppg', limit: int = 10):
     table.add_column("GP", justify="right")
     table.add_column(stat.upper(), justify="right", style="bold")
 
+    pct_stats = ['fg_pct', 'two_pt_pct', 'three_pt_pct', 'ft_pct']
     for rank, (key, stats) in enumerate(players[:limit], 1):
         team_name = season.teams[stats['team_id']].name
         table.add_row(
@@ -2777,7 +2856,7 @@ def show_stats_leaders(season: Season, stat: str = 'ppg', limit: int = 10):
             stats['player_name'],
             team_name,
             str(stats['games']),
-            f"{stats[stat]:.1f}" if stat != 'fg_pct' else f"{stats[stat]:.1f}%"
+            f"{stats[stat]:.1f}" if stat not in pct_stats else f"{stats[stat]:.1f}%"
         )
 
     console.print(table)
@@ -2805,7 +2884,8 @@ def show_my_team_stats(season: Season):
     table.add_column("PPG", justify="right", style="bold")
     table.add_column("RPG", justify="right")
     table.add_column("APG", justify="right")
-    table.add_column("FG%", justify="right")
+    table.add_column("2PT%", justify="right")
+    table.add_column("3PT%", justify="right")
     table.add_column("FT%", justify="right")
     table.add_column("STL", justify="right")
     table.add_column("BLK", justify="right")
@@ -2821,7 +2901,8 @@ def show_my_team_stats(season: Season):
             f"{stats['ppg']:.1f}",
             f"{stats['rpg']:.1f}",
             f"{stats['apg']:.1f}",
-            f"{stats['fg_pct']:.1f}",
+            f"{stats['two_pt_pct']:.1f}",
+            f"{stats['three_pt_pct']:.1f}",
             f"{stats['ft_pct']:.1f}",
             f"{stats['total_stl'] / stats['games']:.1f}" if stats['games'] > 0 else "0.0",
             f"{stats['total_blk'] / stats['games']:.1f}" if stats['games'] > 0 else "0.0",
@@ -2988,6 +3069,7 @@ def main():
     """Main game loop"""
     console.print("[bold magenta]═══════════════════════════════════════════[/bold magenta]")
     console.print("[bold cyan]  CLASSIC NBA TEXT BASKETBALL SIMULATOR  [/bold cyan]")
+    console.print(f"[bold yellow]              Version {VERSION}              [/bold yellow]")
     console.print("[bold magenta]═══════════════════════════════════════════[/bold magenta]\n")
 
     # Load teams once
