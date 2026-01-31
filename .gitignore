@@ -68,3 +68,7 @@ players_old.csv
 
 # Excel files (keep only CSVs in repo)
 *.xlsx
+
+# Full version (not public)
+basketball_sim_v2.py
+teams.csv
