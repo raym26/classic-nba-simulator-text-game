@@ -1,12 +1,12 @@
 team_id,team_name,year,display_name,pace_rating,three_pt_rate,def_rating
-celtics_64,Boston,1965,1965 Boston (Russell Dynasty),1.2,0.0,0.92
+celtics_64,Boston,1965,1965 Boston (Russell Dynasty),1.2,0.0,0.86
 knicks_69,New York,1970,1970 New York (Clyde & Captain),1.15,0.0,0.88
-bucks_70,Milwaukee,1971,1971 Milwaukee (Kareem's First Ring),1.18,0.0,0.95
-lakers_71,Los Angeles,1972,1972 Los Angeles (33-Game Streak),1.16,0.0,0.98
+bucks_70,Milwaukee,1971,1971 Milwaukee (Kareem's First Ring),1.18,0.0,0.88
+lakers_71,Los Angeles,1972,1972 Los Angeles (33-Game Streak),1.16,0.0,0.90
 sixers_82,Philadelphia,1983,1983 Philadelphia (Fo-Fo-Fo),1.08,0.05,0.9
 bulls_84,Chicago,1985,1985 Chicago (Rookie MJ),1.02,0.08,1.08
 celtics_85,Boston,1986,1986 Boston (Bird's Last Ring),1.05,0.1,0.9
-lakers_86,Los Angeles,1987,1987 Los Angeles (Showtime),1.08,0.12,1.0
+lakers_86,Los Angeles,1987,1987 Los Angeles (Showtime),1.08,0.12,0.94
 pistons_88,Detroit,1989,1989 Detroit (Bad Boys),0.98,0.08,0.86
 bulls_92,Chicago,1993,1993 Chicago (First Three-Peat),0.94,0.16,0.87
 rockets_93,Houston,1994,1994 Houston (Hakeem's Dream),0.96,0.22,0.89
@@ -19,7 +19,7 @@ heat_12,Miami,2013,2013 Miami (Big Three),0.98,0.28,0.93
 spurs_13,San Antonio,2014,2014 San Antonio (Beautiful Game),0.96,0.3,0.91
 cavs_15,Cleveland,2016,2016 Cleveland (The Block & Shot),0.99,0.31,0.96
 warriors_16,Golden State,2017,2017 Golden State (Super Team),1.15,0.42,1.05
-nuggets_22,Denver,2023,2023 Denver (Jokic's MVP Season),1.1,0.38,0.95
-celtics_23,Boston,2024,2024 Boston (Banner 18),1.12,0.44,0.92
-thunder_24,Oklahoma City,2024,2024 Oklahoma City (Best in West),1.12,0.39,0.91
+nuggets_22,Denver,2023,2023 Denver (Jokic's MVP Season),1.02,0.38,0.98
+celtics_23,Boston,2024,2024 Boston (Banner 18),1.04,0.44,0.96
+thunder_24,Oklahoma City,2024,2024 Oklahoma City (Best in West),1.04,0.39,0.95
 celtics_07,Boston,2008,2008 Boston (KG-Pierce-Allen),0.92,0.24,0.85

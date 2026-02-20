@@ -4,21 +4,22 @@ Classic NBA Text Basketball Simulation
 A nostalgic recreation of text-based basketball games
 """
 
-VERSION = "2.3.0 Free Edition"
+VERSION = "2.3.0"
+
+# ══════════════════════════════════════════════════════════════
+# FEATURE FLAG: Toggle between Full and Free Edition
+# Set to True for Free Edition (single game modes only)
+# Set to False for Full Version (includes Season Mode)
+# ══════════════════════════════════════════════════════════════
+FREE_EDITION = True
 
 import random
 import time
 import csv
 import sys
-import platform
+import tty
+import termios
 from dataclasses import dataclass
-
-# Platform-specific imports for keyboard input
-if platform.system() != 'Windows':
-    import tty
-    import termios
-else:
-    import msvcrt
 from typing import List, Tuple, Dict, Optional
 from rich.console import Console
 from rich.table import Table
@@ -32,21 +33,25 @@ console = Console()
 
 
 def getch():
-    """Get a single character from user input without requiring ENTER (cross-platform)"""
-    if platform.system() == 'Windows':
-        # Windows
-        ch = msvcrt.getch()
-        return ch.decode('utf-8') if isinstance(ch, bytes) else ch
-    else:
-        # Mac/Linux
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-            ch = sys.stdin.read(1)
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-        return ch
+    """Get a single character from user input without requiring ENTER"""
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    return ch
+
+def get_last_name(full_name: str) -> str:
+    """Extract last name from full name for shorter play-by-play text"""
+    parts = full_name.split()
+    if len(parts) >= 2:
+        # Handle special cases like "A.C. Green" or "K.C. Jones"
+        if parts[0].endswith('.') and len(parts[0]) <= 3:
+            return parts[-1]  # Return just the last name
+        return parts[-1]
+    return full_name
 
 @dataclass
 class Player:
@@ -63,6 +68,7 @@ class Player:
     ppg: float = 5.0  # Points per game (for shot selection weighting)
     fta_pg: float = 2.0  # Free throw attempts per game (for foul probability weighting)
     usage_rate: float = 20.0  # Usage rate - % of team possessions used when player is on floor
+    starter: int = 0  # 1 = starter, 0 = bench
 
     # Game stats (will be updated during simulation)
     points: int = 0
@@ -83,12 +89,13 @@ class Player:
     minutes_played: float = 0.0  # Minutes played in current game
     game_target_minutes: float = 0.0  # Target minutes for this specific game (sampled from distribution)
     
-    def attempt_shot(self, def_rating: float = 1.0, passer = None) -> bool:
+    def attempt_shot(self, def_rating: float = 1.0, passer = None, home_court_boost: float = 1.0) -> bool:
         """Attempt a two-point field goal based on player's shooting percentage
 
         Args:
             def_rating: Defensive modifier (lower = better defense)
             passer: Optional Player who assisted (boosts shooting % based on APG)
+            home_court_boost: Home court advantage multiplier (default 1.0 = neutral court)
         """
         self.fga += 1
         self.two_pta += 1  # Track 2PT attempts separately
@@ -100,6 +107,9 @@ class Player:
             playmaker_boost = 1.0 + min(passer.apg * 0.003, 0.035)
             effective_pct *= playmaker_boost
 
+        # HOME COURT ADVANTAGE: ~2-3% shooting boost at home
+        effective_pct *= home_court_boost
+
         made = random.random() * 100 < effective_pct
         if made:
             self.fgm += 1
@@ -107,12 +117,13 @@ class Player:
             self.points += 2
         return made
 
-    def attempt_three(self, def_rating: float = 1.0, passer = None) -> bool:
+    def attempt_three(self, def_rating: float = 1.0, passer = None, home_court_boost: float = 1.0) -> bool:
         """Attempt a three-pointer based on player's three-point percentage
 
         Args:
             def_rating: Defensive modifier (lower = better defense)
             passer: Optional Player who assisted (boosts shooting % based on APG)
+            home_court_boost: Home court advantage multiplier (default 1.0 = neutral court)
         """
         self.fga += 1
         self.three_pta += 1  # Track 3PT attempts separately
@@ -123,6 +134,9 @@ class Player:
         if passer:
             playmaker_boost = 1.0 + min(passer.apg * 0.003, 0.035)
             effective_pct *= playmaker_boost
+
+        # HOME COURT ADVANTAGE: ~2-3% shooting boost at home
+        effective_pct *= home_court_boost
 
         made = random.random() * 100 < effective_pct
         if made:
@@ -182,12 +196,17 @@ class Team:
     on_court_indices: List[int] = None
 
     def __post_init__(self):
-        """Initialize on-court players - select top 5 by PPG as starters"""
+        """Initialize on-court players using starter flag, fallback to top 5 by MPG"""
         if self.on_court_indices is None:
-            # Select starting 5: Top 5 players by PPG
-            player_indices = [(i, p.ppg) for i, p in enumerate(self.players)]
-            player_indices.sort(key=lambda x: -x[1])  # Sort by PPG descending
-            self.on_court_indices = [idx for idx, _ in player_indices[:5]]
+            # Use starter flag from CSV data
+            starters = [i for i, p in enumerate(self.players) if p.starter == 1]
+            if len(starters) == 5:
+                self.on_court_indices = starters
+            else:
+                # Fallback: top 5 by minutes per game
+                player_indices = [(i, p.minutes_pg) for i, p in enumerate(self.players)]
+                player_indices.sort(key=lambda x: -x[1])
+                self.on_court_indices = [idx for idx, _ in player_indices[:5]]
 
     def get_minutes_std_dev(self, minutes_pg: float) -> float:
         """Calculate standard deviation for minutes distribution based on player tier"""
@@ -224,10 +243,14 @@ class Team:
                 max_allowed = min(48, player.minutes_pg * 1.15)  # Role players: 115% maximum
 
             player.game_target_minutes = max(min_allowed, min(max_allowed, sampled_minutes))
-        # Reset to starting lineup (top 5 by MPG - ensures rotation players start)
-        player_indices = [(i, p.minutes_pg) for i, p in enumerate(self.players)]
-        player_indices.sort(key=lambda x: -x[1])  # Sort by MPG descending
-        self.on_court_indices = [idx for idx, _ in player_indices[:5]]
+        # Reset to starting lineup using starter flag, fallback to top 5 by MPG
+        starters = [i for i, p in enumerate(self.players) if p.starter == 1]
+        if len(starters) == 5:
+            self.on_court_indices = starters
+        else:
+            player_indices = [(i, p.minutes_pg) for i, p in enumerate(self.players)]
+            player_indices.sort(key=lambda x: -x[1])
+            self.on_court_indices = [idx for idx, _ in player_indices[:5]]
         # Reset team score and fouls
         self.score = 0
         self.team_fouls = 0
@@ -318,7 +341,14 @@ class Team:
     def get_on_court(self) -> List[Player]:
         """Get the 5 players currently on the court (excluding fouled-out players)"""
         # Filter out fouled-out players (6+ fouls)
-        return [self.players[i] for i in self.on_court_indices if self.players[i].fouls < 6]
+        active_players = [self.players[i] for i in self.on_court_indices if self.players[i].fouls < 6]
+
+        # Safety: If no active players (all fouled out), return everyone in on_court_indices
+        # This prevents empty list errors (game must continue even with fouled-out players)
+        if not active_players:
+            return [self.players[i] for i in self.on_court_indices]
+
+        return active_players
 
     def substitute_fouled_out_player(self, fouled_out_player: Player) -> Optional[Player]:
         """
@@ -454,13 +484,22 @@ class Team:
             is_superstar = player.usage_rate > 25
 
             # SUPERSTAR PROTECTION RULES:
-            # 1. In close games (single digit): superstars DON'T get subbed out (no minute ceiling)
+            # 1. In close games (single digit): superstars protected (but with 42 min cap in regulation)
             # 2. In blowouts (20+): superstars CAN rest
             # 3. Foul trouble (4+ fouls before Q4): superstars should sit
+            # 4. Hard cap: 42 minutes in regulation, unlimited in OT
             in_foul_trouble = player.fouls >= 4 and game_progress < 0.75
+            is_overtime = game_minutes_elapsed > 48
+            hit_minute_cap = player.minutes_played >= 42 and not is_overtime
+
+            # MINUTE CAP ENFORCEMENT: 42 min cap forces substitution (priority over all other rules)
+            if hit_minute_cap:
+                # High priority sub - use large "ahead of pace" value to ensure they get subbed first
+                players_to_sub_out.append((i, player_idx, 999))
+                continue
 
             if is_superstar and is_close_game and not in_foul_trouble:
-                # Superstar stays on court in close games - skip subbing them out
+                # Superstar stays on court in close games (and hasn't hit cap)
                 continue
 
             # How much of their target minutes should they have played by now?
@@ -550,11 +589,26 @@ class Team:
         for i, player_idx in enumerate(self.on_court_indices):
             player = self.players[player_idx]
 
+            # SUPERSTAR PROTECTION: Protect superstars but with 42 min cap in regulation
+            # Superstars (usage_rate > 25) stay on court unless:
+            # - Foul trouble (5 fouls)
+            # - Hit 42 minute cap (unless in OT - detected by >48 min played)
+            is_superstar = player.usage_rate > 25
+            in_foul_trouble = player.fouls >= 5  # 5 fouls = serious foul trouble
+            is_overtime = player.minutes_played > 48  # If >48 min, must be OT
+            hit_minute_cap = player.minutes_played >= 42 and not is_overtime
+
+            # MINUTE CAP ENFORCEMENT: 42 min cap forces substitution (priority over other rules)
+            needs_forced_sub = hit_minute_cap
+
+            if is_superstar and not in_foul_trouble and not hit_minute_cap:
+                continue  # Superstars stay on court until 42 min cap
+
             # Calculate how much of their game-specific target minutes they've used
             usage_ratio = player.minutes_played / player.game_target_minutes if player.game_target_minutes > 0 else 0
 
-            # Emergency sub only if player has hit their full target
-            if usage_ratio >= 1.0:
+            # Emergency sub if player has hit their full target OR hit the 42 min cap
+            if usage_ratio >= 1.0 or needs_forced_sub:
                 # Find the best substitute: player with lowest usage ratio who isn't on court (position-aware)
                 compatible_positions = self.get_position_compatible(player.position)
                 best_sub_idx = None
@@ -588,6 +642,12 @@ class Team:
     def select_shooter(self) -> Player:
         """Select a player to take the shot (weighted by usage rate)"""
         on_court = self.get_on_court()
+
+        # Safety check: ensure at least one player available
+        if not on_court:
+            # Fallback to first player on roster (should never happen)
+            return self.players[0]
+
         # Use usage_rate to determine shot distribution
         # This ensures focal points like Duncan/Dirk get appropriate touches
         # even if their PPG is lower than flashier scorers
@@ -597,6 +657,15 @@ class Team:
     def select_passer(self, exclude: Player = None) -> Player:
         """Select a player to pass (weighted by assists)"""
         on_court = [p for p in self.get_on_court() if p != exclude]
+
+        # Safety check: if no valid passers, return any player on court
+        if not on_court:
+            on_court = self.get_on_court()
+
+        # Final safety: if still no players, return first player on roster
+        if not on_court:
+            return self.players[0]
+
         # Square the APG to heavily favor high-assist players (Magic, etc.)
         weights = [(p.apg + 1) ** 2 for p in on_court]
         return random.choices(on_court, weights=weights)[0]
@@ -604,14 +673,34 @@ class Team:
     def select_rebounder(self) -> Player:
         """Select a player to get the rebound"""
         on_court = self.get_on_court()
+
+        # Safety check: ensure at least one player available
+        if not on_court:
+            # Fallback to first player on roster (should never happen)
+            return self.players[0]
+
         weights = [p.rpg + 1 for p in on_court]
         return random.choices(on_court, weights=weights)[0]
+
+    def get_random_on_court_player(self) -> Player:
+        """
+        Safely get a random player from on-court players
+        Fallback to first player if on-court list is empty
+        """
+        on_court = self.get_on_court()
+        if not on_court:
+            # Emergency fallback: use first player from on_court_indices or roster
+            if self.on_court_indices:
+                return self.players[self.on_court_indices[0]]
+            else:
+                return self.players[0]
+        return random.choice(on_court)
 
 
 class GameSimulation:
     """Simulates a basketball game"""
 
-    def __init__(self, team1: Team, team2: Team, game_speed: float = 0.5, silent_mode: bool = False):
+    def __init__(self, team1: Team, team2: Team, game_speed: float = 0.5, silent_mode: bool = False, home_team: Team = None):
         self.team1 = team1
         self.team2 = team2
         self.quarter = 1
@@ -626,6 +715,7 @@ class GameSimulation:
         }
         self.game_minutes_elapsed = 0.0  # Track total game time for substitution logic
         self.manual_control_team = None  # If set, this team won't get auto-rotations
+        self.home_team = home_team  # Which team has home court advantage (None = neutral court)
 
     def get_era_possession_time(self, year: int) -> Tuple[int, int]:
         """Get base possession time range based on team's era
@@ -673,6 +763,21 @@ class GameSimulation:
         else:
             return False, "none"
 
+    def get_home_court_boost(self, team: Team) -> float:
+        """
+        Get home court advantage shooting boost for a team
+
+        Returns:
+            1.025 if team is at home (~2.5% shooting boost)
+            1.0 if neutral court or team is away
+        """
+        if self.home_team is None:
+            return 1.0  # Neutral court
+        elif team == self.home_team:
+            return 1.025  # 2.5% shooting boost at home
+        else:
+            return 1.0  # Away team, no boost
+
     def is_foul_trouble(self, player: Player) -> bool:
         """
         Check if a player is in foul trouble based on current quarter
@@ -717,7 +822,17 @@ class GameSimulation:
         - fouled_out: True if the fouling player just fouled out (6 fouls)
         """
         # Select random defender from on-court players
-        fouling_player = random.choice(fouling_team.get_on_court())
+        on_court = fouling_team.get_on_court()
+
+        # Safety check: if no players on court, use first player from on_court_indices or roster
+        if not on_court:
+            if fouling_team.on_court_indices:
+                fouling_player = fouling_team.players[fouling_team.on_court_indices[0]]
+            else:
+                # Emergency fallback: use first player from roster
+                fouling_player = fouling_team.players[0]
+        else:
+            fouling_player = random.choice(on_court)
 
         # Increment personal and team fouls
         fouling_player.fouls += 1
@@ -741,12 +856,26 @@ class GameSimulation:
 
         current_player = None
         last_passer = None  # Track who made the last pass
-        # Simulate passes but don't add to play description (too verbose)
+        first_passer = None  # Track first passer for display
+        players_touched = set()  # Track who has had the ball to avoid duplicates
+
+        # Simulate passes - show max 1-2 in play description
         for i in range(num_passes):
             passer = self.possession.select_passer(exclude=current_player)
             receiver = self.possession.select_passer(exclude=passer)
+            # Make sure receiver is different from everyone who touched ball
+            attempts = 0
+            while receiver.name in players_touched and attempts < 5:
+                receiver = self.possession.select_passer(exclude=passer)
+                attempts += 1
+
+            players_touched.add(passer.name)
             last_passer = passer  # Remember who passed (for assists and playmaker boost)
             current_player = receiver
+
+            # Track first passer for 2-pass sequences
+            if i == 0:
+                first_passer = passer
 
         # Get defending team
         defending_team = self.team2 if self.possession == self.team1 else self.team1
@@ -754,49 +883,53 @@ class GameSimulation:
         # Check for turnover (~10% of possessions)
         if random.random() < 0.10:
             ball_handler = self.possession.select_shooter() if current_player is None else current_player
+            handler_name = get_last_name(ball_handler.name)
 
             # 60% of turnovers are steals (defensive player gets credit)
             # 40% are unforced errors (bad pass, traveling, etc.)
             if random.random() < 0.60:
                 # STEAL - Credit defensive player
-                defender = random.choice(defending_team.get_on_court())
+                defender = defending_team.get_random_on_court_player()
                 defender.steals += 1
                 ball_handler.turnovers += 1
-                plays.append(f"Turnover! {ball_handler.name} loses ball → Steal: {defender.name}")
+                defender_name = get_last_name(defender.name)
+                plays.append(f"{handler_name} loses the ball! Stolen by {defender_name}")
             else:
                 # UNFORCED ERROR
                 ball_handler.turnovers += 1
-                turnover_types = ["Bad pass", "Traveling", "Offensive foul", "Lost ball"]
+                turnover_types = ["Bad pass", "Traveling", "Offensive foul", "Lost handle"]
                 error_type = random.choice(turnover_types)
-                plays.append(f"Turnover! {ball_handler.name} - {error_type}")
+                plays.append(f"{handler_name} turns it over - {error_type.lower()}")
 
-            return " → ".join(plays), scored
+            return " | ".join(plays), scored
 
         # Check for non-shooting foul (before shot attempt)
         # 10% chance of non-shooting foul during possession
         if random.random() < 0.10:
             offensive_player = self.possession.select_shooter() if current_player is None else current_player
             fouling_player, fouled_out = self.commit_foul(defending_team, offensive_player)
+            fouler_name = get_last_name(fouling_player.name)
+            off_player_name = get_last_name(offensive_player.name)
 
-            plays.append(f"Foul on {fouling_player.name}! (PF{fouling_player.fouls})")
+            plays.append(f"Foul on {fouler_name} (PF{fouling_player.fouls})")
 
             # Check if player fouled out
             if fouled_out:
-                plays.append(f"[bold red]{fouling_player.name} FOULS OUT! (6 fouls)[/bold red]")
+                plays.append(f"[bold red]{fouler_name} fouls out![/bold red]")
                 # Immediately substitute the fouled-out player
                 substitute = defending_team.substitute_fouled_out_player(fouling_player)
                 if substitute:
-                    plays.append(f"{substitute.name} enters the game")
+                    plays.append(f"{get_last_name(substitute.name)} checks in")
             # Check if player is in foul trouble (needs to sit)
             elif self.is_foul_trouble(fouling_player):
-                plays.append(f"[yellow]Foul trouble! {fouling_player.name} heads to the bench[/yellow]")
+                plays.append(f"[yellow]{fouler_name} in foul trouble, heads to bench[/yellow]")
                 substitute = defending_team.substitute_fouled_out_player(fouling_player)
                 if substitute:
-                    plays.append(f"{substitute.name} enters the game")
+                    plays.append(f"{get_last_name(substitute.name)} checks in")
 
             # Check bonus situation (5+ team fouls = 2 FTs)
             if defending_team.team_fouls >= 5:
-                plays.append(f"Bonus! {offensive_player.name} shoots 2 free throws...")
+                plays.append(f"Bonus - {off_player_name} at the line")
                 ft_results = []
                 for i in range(2):
                     ft_made = offensive_player.attempt_free_throw()
@@ -806,12 +939,13 @@ class GameSimulation:
                     ft_results.append('✓' if ft_made else 'X')
                 plays.append(f"Free throws: {' '.join(ft_results)}")
             else:
-                plays.append(f"Non-shooting foul. {self.possession.name} retains possession.")
+                plays.append(f"Non-shooting foul. {self.possession.name} ball.")
 
-            return " → ".join(plays), scored
+            return " | ".join(plays), scored
 
-        # Someone takes a shot
-        shooter = self.possession.select_shooter() if current_player is None else current_player
+        # Someone takes a shot (always use usage_rate weighting, not last receiver)
+        shooter = self.possession.select_shooter()
+        shooter_name = get_last_name(shooter.name)
         def_rating = defending_team.def_rating
 
         # Decide shot type (use team-specific three-point rate)
@@ -825,20 +959,27 @@ class GameSimulation:
             shot_type = 'two'
 
         if shot_type == 'three':
-            plays.append(f"{shooter.name} shoots a three-pointer...")
+            # Build play description with passes (max 1-2)
+            if num_passes >= 2 and first_passer and last_passer and first_passer != last_passer and last_passer != shooter:
+                plays.append(f"{get_last_name(first_passer.name)} to {get_last_name(last_passer.name)} to {shooter_name}")
+            elif num_passes >= 1 and last_passer and last_passer != shooter:
+                plays.append(f"{get_last_name(last_passer.name)} finds {shooter_name}")
+
+            plays.append(f"{shooter_name} pulls up for three...")
 
             # Check for block (rare on 3PT shots, ~2%)
             blocked = random.random() < 0.02
             if blocked:
-                blocker = random.choice(defending_team.get_on_court())
+                blocker = defending_team.get_random_on_court_player()
                 blocker.blocks += 1
                 shooter.fga += 1  # FGA counts even if blocked
-                plays.append(f"BLOCKED by {blocker.name}!")
+                plays.append(f"BLOCKED by {get_last_name(blocker.name)}!")
                 made = False
                 fouled = False  # Can't foul on a clean block
             else:
                 # Pass last_passer for playmaker boost (if there were passes)
-                made = shooter.attempt_three(def_rating, passer=last_passer if num_passes > 0 else None)
+                home_boost = self.get_home_court_boost(self.possession)
+                made = shooter.attempt_three(def_rating, passer=last_passer if num_passes > 0 else None, home_court_boost=home_boost)
 
                 # Check for foul (weighted by FTA per game)
                 foul_probability = min(0.3, shooter.fta_pg * 0.02)
@@ -850,75 +991,59 @@ class GameSimulation:
 
                 # Varied 3PT descriptions
                 three_pt_makes = [
-                    "drains a deep three!",
-                    "nails the triple!",
-                    "from downtown!",
-                    "three-ball is good!",
-                    "splashes the three!"
+                    "Drains it!",
+                    "Got it! Triple!",
+                    "Bang! From downtown!",
+                    "Splashes the three!",
+                    "Nothing but net!"
                 ]
                 shot_desc = random.choice(three_pt_makes)
+                plays.append(shot_desc)
 
-                # Show last passer if there were passes, otherwise just shooter
-                if num_passes > 0 and last_passer:
-                    plays.append(f"{last_passer.name} → {shooter.name} {shot_desc}")
-                    # Credit assist (70% chance)
-                    if random.random() < 0.7:
-                        last_passer.get_assist()
-                else:
-                    plays.append(f"{shooter.name} {shot_desc}")
+                # Credit assist (70% chance)
+                if num_passes > 0 and last_passer and random.random() < 0.7:
+                    last_passer.get_assist()
 
                 # And-1 opportunity if fouled
                 if fouled:
                     fouling_player, fouled_out = self.commit_foul(defending_team, shooter)
-                    plays.append(f"Fouled by {fouling_player.name}! (PF{fouling_player.fouls}) And-1 opportunity...")
+                    fouler_name = get_last_name(fouling_player.name)
+                    plays.append(f"And-1! Fouled by {fouler_name} (PF{fouling_player.fouls})")
                     if fouled_out:
-                        plays.append(f"[bold red]{fouling_player.name} FOULS OUT![/bold red]")
-                        # Immediately substitute the fouled-out player
+                        plays.append(f"[bold red]{fouler_name} fouls out![/bold red]")
                         substitute = defending_team.substitute_fouled_out_player(fouling_player)
                         if substitute:
-                            plays.append(f"{substitute.name} enters the game")
+                            plays.append(f"{get_last_name(substitute.name)} checks in")
                     elif self.is_foul_trouble(fouling_player):
-                        plays.append(f"[yellow]Foul trouble! {fouling_player.name} heads to the bench[/yellow]")
+                        plays.append(f"[yellow]{fouler_name} in foul trouble[/yellow]")
                         substitute = defending_team.substitute_fouled_out_player(fouling_player)
                         if substitute:
-                            plays.append(f"{substitute.name} enters the game")
+                            plays.append(f"{get_last_name(substitute.name)} checks in")
                     ft_made = shooter.attempt_free_throw()
                     if ft_made:
                         self.possession.score += 1
-                        plays.append(f"Free throw: GOOD")
+                        plays.append("Bonus free throw: Good!")
                     else:
-                        plays.append(f"Free throw: Missed")
+                        plays.append("Bonus free throw: Missed")
             else:
-                # Varied 3PT miss descriptions
-                three_pt_misses = [
-                    "No good!",
-                    "Three misses!",
-                    "Off the mark!",
-                    "Doesn't fall!"
-                ]
-                shot_desc = random.choice(three_pt_misses)
-
-                # Show passer → shooter if passes, otherwise just shooter
-                if num_passes > 0 and last_passer:
-                    plays.append(f"{last_passer.name} → {shooter.name}... {shot_desc}")
-                else:
-                    plays.append(f"{shooter.name}... {shot_desc}")
+                # 3PT miss
+                plays.append("No good!")
 
                 # Shooting foul = 3 free throws
                 if fouled:
                     fouling_player, fouled_out = self.commit_foul(defending_team, shooter)
-                    plays.append(f"Fouled by {fouling_player.name}! (PF{fouling_player.fouls}) 3 free throws...")
+                    fouler_name = get_last_name(fouling_player.name)
+                    plays.append(f"Foul on {fouler_name} (PF{fouling_player.fouls}) - {shooter_name} shoots 3")
                     if fouled_out:
-                        plays.append(f"[bold red]{fouling_player.name} FOULS OUT![/bold red]")
-                        # Immediately substitute the fouled-out player
+                        plays.append(f"[bold red]{fouler_name} fouls out![/bold red]")
                         substitute = defending_team.substitute_fouled_out_player(fouling_player)
                         if substitute:
-                            plays.append(f"{substitute.name} enters the game")
+                            plays.append(f"{get_last_name(substitute.name)} checks in")
                     elif self.is_foul_trouble(fouling_player):
-                        plays.append(f"[yellow]Foul trouble! {fouling_player.name} heads to the bench[/yellow]")
+                        plays.append(f"[yellow]{fouler_name} in foul trouble[/yellow]")
                         substitute = defending_team.substitute_fouled_out_player(fouling_player)
                         if substitute:
-                            plays.append(f"{substitute.name} enters the game")
+                            plays.append(f"{get_last_name(substitute.name)} checks in")
                     ft_results = []
                     for i in range(3):
                         ft_made = shooter.attempt_free_throw()
@@ -927,20 +1052,34 @@ class GameSimulation:
                         ft_results.append('✓' if ft_made else 'X')
                     plays.append(f"Free throws: {' '.join(ft_results)}")
         else:
-            plays.append(f"{shooter.name} shoots...")
+            # 2PT shot - build play description with passes (max 1-2)
+            if num_passes >= 2 and first_passer and last_passer and first_passer != last_passer and last_passer != shooter:
+                plays.append(f"{get_last_name(first_passer.name)} to {get_last_name(last_passer.name)} to {shooter_name}")
+            elif num_passes >= 1 and last_passer and last_passer != shooter:
+                plays.append(f"{get_last_name(last_passer.name)} finds {shooter_name}")
+
+            # Varied shot attempt descriptions
+            shot_attempts = [
+                f"{shooter_name} drives to the basket...",
+                f"{shooter_name} pulls up...",
+                f"{shooter_name} in the paint...",
+                f"{shooter_name} attacks the rim..."
+            ]
+            plays.append(random.choice(shot_attempts))
 
             # Check for block (more common on 2PT shots, ~5%)
             blocked = random.random() < 0.05
             if blocked:
-                blocker = random.choice(defending_team.get_on_court())
+                blocker = defending_team.get_random_on_court_player()
                 blocker.blocks += 1
                 shooter.fga += 1  # FGA counts even if blocked
-                plays.append(f"BLOCKED by {blocker.name}!")
+                plays.append(f"BLOCKED by {get_last_name(blocker.name)}!")
                 made = False
                 fouled = False  # Can't foul on a clean block
             else:
                 # Pass last_passer for playmaker boost (if there were passes)
-                made = shooter.attempt_shot(def_rating, passer=last_passer if num_passes > 0 else None)
+                home_boost = self.get_home_court_boost(self.possession)
+                made = shooter.attempt_shot(def_rating, passer=last_passer if num_passes > 0 else None, home_court_boost=home_boost)
 
                 # Check for foul (weighted by FTA per game)
                 foul_probability = min(0.3, shooter.fta_pg * 0.02)
@@ -950,81 +1089,68 @@ class GameSimulation:
                 self.possession.score += 2
                 scored = True
 
-                # Varied 2PT descriptions (dunks, layups, floaters, etc.)
+                # Varied 2PT make descriptions
                 two_pt_makes = [
-                    "slams it home!",
-                    "finishes strong!",
-                    "with the layup!",
-                    "fadeaway is good!",
-                    "floater drops in!",
-                    "banks it in!",
-                    "scores inside!",
-                    "hits the jumper!"
+                    "Scores!",
+                    "Got it!",
+                    "Lays it in!",
+                    "Slams it home!",
+                    "Banks it in!",
+                    "Floater drops!",
+                    "Fadeaway good!"
                 ]
-                shot_desc = random.choice(two_pt_makes)
+                plays.append(random.choice(two_pt_makes))
 
-                # Show last passer if there were passes, otherwise just shooter
-                if num_passes > 0 and last_passer:
-                    plays.append(f"{last_passer.name} → {shooter.name} {shot_desc}")
-                    # Credit assist (70% chance)
-                    if random.random() < 0.7:
-                        last_passer.get_assist()
-                else:
-                    plays.append(f"{shooter.name} {shot_desc}")
+                # Credit assist (70% chance)
+                if num_passes > 0 and last_passer and random.random() < 0.7:
+                    last_passer.get_assist()
 
                 # And-1 opportunity if fouled
                 if fouled:
                     fouling_player, fouled_out = self.commit_foul(defending_team, shooter)
-                    plays.append(f"Fouled by {fouling_player.name}! (PF{fouling_player.fouls}) And-1 opportunity...")
+                    fouler_name = get_last_name(fouling_player.name)
+                    plays.append(f"And-1! Fouled by {fouler_name} (PF{fouling_player.fouls})")
                     if fouled_out:
-                        plays.append(f"[bold red]{fouling_player.name} FOULS OUT![/bold red]")
-                        # Immediately substitute the fouled-out player
+                        plays.append(f"[bold red]{fouler_name} fouls out![/bold red]")
                         substitute = defending_team.substitute_fouled_out_player(fouling_player)
                         if substitute:
-                            plays.append(f"{substitute.name} enters the game")
+                            plays.append(f"{get_last_name(substitute.name)} checks in")
                     elif self.is_foul_trouble(fouling_player):
-                        plays.append(f"[yellow]Foul trouble! {fouling_player.name} heads to the bench[/yellow]")
+                        plays.append(f"[yellow]{fouler_name} in foul trouble[/yellow]")
                         substitute = defending_team.substitute_fouled_out_player(fouling_player)
                         if substitute:
-                            plays.append(f"{substitute.name} enters the game")
+                            plays.append(f"{get_last_name(substitute.name)} checks in")
                     ft_made = shooter.attempt_free_throw()
                     if ft_made:
                         self.possession.score += 1
-                        plays.append(f"Free throw: GOOD")
+                        plays.append("Bonus free throw: Good!")
                     else:
-                        plays.append(f"Free throw: Missed")
+                        plays.append("Bonus free throw: Missed")
             else:
-                # Varied 2PT miss descriptions
-                two_pt_misses = [
+                # 2PT miss
+                miss_descriptions = [
                     "No good!",
-                    "Misses the shot!",
+                    "Misses!",
                     "Off the rim!",
-                    "Doesn't fall!",
-                    "Can't connect!"
+                    "Can't finish!"
                 ]
-                shot_desc = random.choice(two_pt_misses)
-
-                # Show passer → shooter if passes, otherwise just shooter
-                if num_passes > 0 and last_passer:
-                    plays.append(f"{last_passer.name} → {shooter.name}... {shot_desc}")
-                else:
-                    plays.append(f"{shooter.name}... {shot_desc}")
+                plays.append(random.choice(miss_descriptions))
 
                 # Shooting foul = 2 free throws
                 if fouled:
                     fouling_player, fouled_out = self.commit_foul(defending_team, shooter)
-                    plays.append(f"Fouled by {fouling_player.name}! (PF{fouling_player.fouls}) 2 free throws...")
+                    fouler_name = get_last_name(fouling_player.name)
+                    plays.append(f"Foul on {fouler_name} (PF{fouling_player.fouls}) - {shooter_name} shoots 2")
                     if fouled_out:
-                        plays.append(f"[bold red]{fouling_player.name} FOULS OUT![/bold red]")
-                        # Immediately substitute the fouled-out player
+                        plays.append(f"[bold red]{fouler_name} fouls out![/bold red]")
                         substitute = defending_team.substitute_fouled_out_player(fouling_player)
                         if substitute:
-                            plays.append(f"{substitute.name} enters the game")
+                            plays.append(f"{get_last_name(substitute.name)} checks in")
                     elif self.is_foul_trouble(fouling_player):
-                        plays.append(f"[yellow]Foul trouble! {fouling_player.name} heads to the bench[/yellow]")
+                        plays.append(f"[yellow]{fouler_name} in foul trouble[/yellow]")
                         substitute = defending_team.substitute_fouled_out_player(fouling_player)
                         if substitute:
-                            plays.append(f"{substitute.name} enters the game")
+                            plays.append(f"{get_last_name(substitute.name)} checks in")
                     ft_results = []
                     for i in range(2):
                         ft_made = shooter.attempt_free_throw()
@@ -1032,33 +1158,21 @@ class GameSimulation:
                             self.possession.score += 1
                         ft_results.append('✓' if ft_made else 'X')
                     plays.append(f"Free throws: {' '.join(ft_results)}")
-        
+
         # Rebound on miss (only if not fouled)
         if not made and not fouled:
             # 70% chance defensive rebound, 30% offensive
             if random.random() < 0.7:
                 rebounder = defending_team.select_rebounder()
-                plays.append(f"Rebound: {rebounder.name}")
+                plays.append(f"{get_last_name(rebounder.name)} grabs the rebound")
                 rebounder.get_rebound()
             else:
                 rebounder = self.possession.select_rebounder()
-                plays.append(f"Offensive rebound: {rebounder.name}")
                 rebounder.get_rebound()
-                # They might score on putback
-                if random.random() < 0.4:
-                    made = rebounder.attempt_shot(def_rating)
-                    if made:
-                        self.possession.score += 2
-                        scored = True
-                        putback_descriptions = [
-                            "puts it back in!",
-                            "tips it in!",
-                            "follows with the slam!",
-                            "quick putback!"
-                        ]
-                        plays.append(f"{rebounder.name} {random.choice(putback_descriptions)}")
-        
-        return " → ".join(plays), scored
+                # Offensive rebound — possession continues (next simulate_possession handles the new shot)
+                plays.append(f"Offensive rebound: {get_last_name(rebounder.name)}")
+
+        return " | ".join(plays), scored
     
     def create_display(self) -> Layout:
         """Create the rich layout for the game display"""
@@ -1254,7 +1368,12 @@ class GameSimulation:
                     self.team2.check_substitutions()
 
             # Switch possession (always switch after a score, even on putbacks)
-            if scored or ("Offensive rebound" not in play_desc and "retains possession" not in play_desc):
+            possession_continues = (
+                "Offensive rebound" in play_desc
+                or "retains possession" in play_desc
+                or "Non-shooting foul" in play_desc
+            )
+            if scored or not possession_continues:
                 self.possession = self.team2 if self.possession == self.team1 else self.team1
 
             # Update time
@@ -1324,13 +1443,16 @@ class GameSimulation:
                 base_time = random.randint(min_time, max_time)
                 possession_time = int(base_time / self.possession.pace_rating)
 
+                current_possession = self.possession  # Remember who was attacking
                 play_desc, scored = self.simulate_possession()
+                # Prefix with team name so it's clear who had the ball
+                team_prefix = f"[{current_possession.name}] "
                 # Add score inline for slow watching (makes play-by-play self-explanatory)
                 if scored and self.game_speed >= 1.0:  # Only at slower speeds
-                    play_desc_with_score = f"{play_desc} [{self.team1.score}-{self.team2.score}]"
+                    play_desc_with_score = f"{team_prefix}{play_desc} [{self.team1.score}-{self.team2.score}]"
                     self.play_by_play.append(play_desc_with_score)
                 else:
-                    self.play_by_play.append(play_desc)
+                    self.play_by_play.append(f"{team_prefix}{play_desc}")
 
                 # Update minutes played for both teams
                 self.team1.update_minutes(possession_time)
@@ -1350,7 +1472,12 @@ class GameSimulation:
                         self.team2.check_substitutions()
 
                 # Switch possession (always switch after a score, even on putbacks)
-                if scored or ("Offensive rebound" not in play_desc and "retains possession" not in play_desc):
+                possession_continues = (
+                    "Offensive rebound" in play_desc
+                    or "retains possession" in play_desc
+                    or "Non-shooting foul" in play_desc
+                )
+                if scored or not possession_continues:
                     self.possession = self.team2 if self.possession == self.team1 else self.team1
 
                 # Update time
@@ -1380,9 +1507,10 @@ class GameSimulation:
             if q < 4 and not self.silent_mode:
                 time.sleep(2)  # Brief pause between quarters
 
-        # Check for overtime
+        # Check for overtime (max 10 OTs to prevent infinite loops)
         ot_count = 0
-        while self.team1.score == self.team2.score:
+        max_ot = 10
+        while self.team1.score == self.team2.score and ot_count < max_ot:
             ot_count += 1
             if not self.silent_mode:
                 console.print(f"\n[bold yellow]OVERTIME {ot_count}![/bold yellow]")
@@ -1394,6 +1522,16 @@ class GameSimulation:
             self.simulate_quarter()
             if not self.silent_mode:
                 time.sleep(2)
+
+        # If still tied after max OT, award win to home team (or team1 if neutral)
+        if self.team1.score == self.team2.score:
+            if self.home_team == self.team1:
+                self.team1.score += 1  # Home team wins in sudden death
+            elif self.home_team == self.team2:
+                self.team2.score += 1
+            else:
+                # Neutral court - team1 wins (arbitrary tiebreaker)
+                self.team1.score += 1
 
         # Final score (skip in silent mode)
         if not self.silent_mode:
@@ -1581,9 +1719,10 @@ class GameSimulation:
 def load_teams_from_csv() -> Dict[str, Dict]:
     """Load teams and players from CSV files"""
     teams_data = {}
-    
-    # Load teams
-    with open('teams_free.csv', 'r') as f:
+
+    # Load teams (use trademark-safe names for Free Edition)
+    teams_file = 'teams_free.csv' if FREE_EDITION else 'teams.csv'
+    with open(teams_file, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         for row in reader:
             teams_data[row['team_id']] = {
@@ -1597,7 +1736,7 @@ def load_teams_from_csv() -> Dict[str, Dict]:
             }
     
     # Load players
-    with open('players.csv', 'r') as f:
+    with open('players.csv', 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         for row in reader:
             team_id = row['team_id']
@@ -1614,7 +1753,8 @@ def load_teams_from_csv() -> Dict[str, Dict]:
                     minutes_pg=float(row['minutes_pg']),
                     ppg=float(row['ppg']),
                     fta_pg=float(row['fta_pg']),
-                    usage_rate=float(row['usage_rate'])
+                    usage_rate=float(row['usage_rate']),
+                    starter=int(row.get('starter', 0))
                 )
                 teams_data[team_id]['players'].append(player)
     
@@ -1858,9 +1998,21 @@ class InteractiveGame(GameSimulation):
             actions.append(f"[T] Shoot 3PT ({three_pt_pct:.1f}%)")
         actions.append(f"[X] Timeout ({self.user_timeouts} remaining)")
 
-        # Display actions
-        for action in actions:
-            console.print(f"  {action}")
+        # Display actions in two columns to fit on smaller screens
+        mid_point = (len(actions) + 1) // 2
+        left_col = actions[:mid_point]
+        right_col = actions[mid_point:]
+
+        # Pad right column if needed
+        while len(right_col) < len(left_col):
+            right_col.append("")
+
+        # Print side by side
+        for left, right in zip(left_col, right_col):
+            if right:
+                console.print(f"  {left:40s}  {right}")
+            else:
+                console.print(f"  {left}")
 
         # Get input (single keypress - no ENTER needed)
         console.print("\n[bold]Your choice: [/bold]", end='')
@@ -1938,7 +2090,7 @@ class InteractiveGame(GameSimulation):
 
                     # Small chance of turnover while dribbling
                     if random.random() < 0.03:
-                        stealer = random.choice(self.cpu_team.get_on_court())
+                        stealer = self.cpu_team.get_random_on_court_player()
                         stealer.steals += 1
                         ball_handler.turnovers += 1
                         plays.append(f"STEAL by {stealer.name}!")
@@ -1951,7 +2103,7 @@ class InteractiveGame(GameSimulation):
 
                     # Small chance of steal on pass
                     if random.random() < 0.05:
-                        stealer = random.choice(self.cpu_team.get_on_court())
+                        stealer = self.cpu_team.get_random_on_court_player()
                         stealer.steals += 1
                         ball_handler.turnovers += 1
                         plays.append(f"INTERCEPTED by {stealer.name}!")
@@ -1973,14 +2125,15 @@ class InteractiveGame(GameSimulation):
 
                 # Check for block
                 if random.random() < 0.05:
-                    blocker = random.choice(self.cpu_team.get_on_court())
+                    blocker = self.cpu_team.get_random_on_court_player()
                     blocker.blocks += 1
                     ball_handler.fga += 1
                     plays.append(f"BLOCKED by {blocker.name}!")
                     made = False
                     fouled = False  # Can't foul on clean block
                 else:
-                    made = ball_handler.attempt_shot(self.cpu_team.def_rating)
+                    home_boost = self.get_home_court_boost(self.user_team)
+                    made = ball_handler.attempt_shot(self.cpu_team.def_rating, home_court_boost=home_boost)
 
                     # Check for foul (weighted by FTA per game)
                     foul_probability = min(0.3, ball_handler.fta_pg * 0.02)
@@ -2057,7 +2210,8 @@ class InteractiveGame(GameSimulation):
                         if random.random() < 0.7:
                             # CPU auto-resolves putback (possession will end)
                             if random.random() < 0.45:
-                                made = rebounder.attempt_shot(self.cpu_team.def_rating)
+                                home_boost = self.get_home_court_boost(self.user_team)
+                                made = rebounder.attempt_shot(self.cpu_team.def_rating, home_court_boost=home_boost)
                                 if made:
                                     self.user_team.score += 2
                                     plays.append(f"{rebounder.name} gets the board and tips it in!")
@@ -2077,6 +2231,9 @@ class InteractiveGame(GameSimulation):
                                 return " → ".join(plays), False, None
                         # If not auto-resolved, user continues possession
                         plays.append(f"Offensive rebound: {rebounder.name}")
+                        self.play_by_play.append(" → ".join(plays))
+                        console.print(f"\n[bold green]OFFENSIVE REBOUND! {rebounder.name} has the ball! (Shot clock: 14)[/bold green]")
+                        time.sleep(1.0)
                         ball_handler = rebounder
                         self.shot_clock = 14  # Reset shot clock after offensive rebound (NBA rule)
 
@@ -2087,14 +2244,15 @@ class InteractiveGame(GameSimulation):
 
                 # Check for block (rare on 3PT)
                 if random.random() < 0.02:
-                    blocker = random.choice(self.cpu_team.get_on_court())
+                    blocker = self.cpu_team.get_random_on_court_player()
                     blocker.blocks += 1
                     ball_handler.fga += 1
                     plays.append(f"BLOCKED by {blocker.name}!")
                     made = False
                     fouled = False  # Can't foul on clean block
                 else:
-                    made = ball_handler.attempt_three(self.cpu_team.def_rating)
+                    home_boost = self.get_home_court_boost(self.user_team)
+                    made = ball_handler.attempt_three(self.cpu_team.def_rating, home_court_boost=home_boost)
 
                     # Check for foul (weighted by FTA per game, rarer on 3PT)
                     foul_probability = min(0.2, ball_handler.fta_pg * 0.015)
@@ -2171,7 +2329,8 @@ class InteractiveGame(GameSimulation):
                         if random.random() < 0.7:
                             # CPU auto-resolves putback (possession will end)
                             if random.random() < 0.35:  # Lower chance for 3PT putbacks
-                                made = rebounder.attempt_shot(self.cpu_team.def_rating)
+                                home_boost = self.get_home_court_boost(self.user_team)
+                                made = rebounder.attempt_shot(self.cpu_team.def_rating, home_court_boost=home_boost)
                                 if made:
                                     self.user_team.score += 2
                                     plays.append(f"{rebounder.name} gets the board and puts it back!")
@@ -2191,6 +2350,9 @@ class InteractiveGame(GameSimulation):
                                 return " → ".join(plays), False, None
                         # If not auto-resolved, user continues possession
                         plays.append(f"Offensive rebound: {rebounder.name}")
+                        self.play_by_play.append(" → ".join(plays))
+                        console.print(f"\n[bold green]OFFENSIVE REBOUND! {rebounder.name} has the ball! (Shot clock: 14)[/bold green]")
+                        time.sleep(1.0)
                         ball_handler = rebounder
                         self.shot_clock = 14  # Reset shot clock after offensive rebound (NBA rule)
 
@@ -2335,8 +2497,12 @@ class InteractiveGame(GameSimulation):
             # Check the LAST action in the play (after final →)
             last_action = play_desc.split("→")[-1].strip() if "→" in play_desc else play_desc
 
-            # Possession continues only if last action is "Offensive rebound: {player}"
-            continues_possession = "Offensive rebound:" in last_action or "retains possession" in last_action
+            # Possession continues if: offensive rebound, non-shooting foul (team retains ball), or explicit flag
+            continues_possession = (
+                "Offensive rebound:" in last_action
+                or "retains possession" in last_action
+                or "Non-shooting foul" in play_desc
+            )
 
             if has_turnover or not continues_possession:
                 self.possession = self.team2 if self.possession == self.team1 else self.team1
@@ -2353,8 +2519,10 @@ class InteractiveGame(GameSimulation):
         console.print(f"[bold green]End of Quarter {self.quarter}[/bold green]")
         console.print(f"Score: {self.team1.name} {self.team1.score} - {self.team2.name} {self.team2.score}\n")
 
-        # Allow substitutions between quarters (except after Q4 - might go to OT)
-        if self.quarter < 4:
+        # Allow substitutions between quarters (except after Q2 and Q4)
+        # Q2 handled by halftime flow in simulate_game()
+        # Q4 might go to OT, so no subs
+        if self.quarter < 4 and self.quarter != 2:
             time.sleep(2)
             console.print("[bold cyan]Make substitutions for next quarter?[/bold cyan]")
             sub_choice = Prompt.ask("Press ENTER to keep lineup, or type 'S' to substitute", default="", show_default=False)
@@ -2432,8 +2600,7 @@ class InteractiveGame(GameSimulation):
         self.show_team_stats_halftime(self.team1)
         self.show_team_stats_halftime(self.team2)
 
-        console.print("\n[bold cyan]Review both teams' performance above before making lineup changes.[/bold cyan]")
-        console.print("\n[dim]Press ENTER when ready...[/dim]")
+        console.print("\n[dim]Press ENTER to continue to 2nd half...[/dim]")
         input()
 
     def show_team_stats_halftime(self, team: Team):
@@ -2476,7 +2643,7 @@ class InteractiveGame(GameSimulation):
         console.print(stats_table)
 
     def show_halftime_stats(self):
-        """Override to skip the 'Press ENTER' prompt (we handle it in simulate_game with substitution menu)"""
+        """Override to show BOTH teams' stats and skip the 'Press ENTER' prompt"""
         console.print("[bold]HALFTIME BOX SCORE[/bold]\n")
 
         # Calculate quarter points
@@ -2542,10 +2709,11 @@ class InteractiveGame(GameSimulation):
         console.print(summary_table)
         console.print()
 
-        # Individual player stats for BOTH teams (user can see opponent performance)
+        # Show individual player stats for BOTH teams (user can review opponent performance)
         self.show_team_stats_halftime(self.team1)
         self.show_team_stats_halftime(self.team2)
 
+        console.print("\n[bold cyan]Review both teams' performance above before making lineup changes.[/bold cyan]")
         # NO "Press ENTER" prompt here - handled in simulate_game() with substitution menu
 
     def simulate_game(self):
@@ -2606,7 +2774,7 @@ class Season:
     """Manages a full season with schedule, standings, and stats tracking"""
     teams: Dict[str, Team]  # team_id -> Team object
     user_team_id: str  # Which team the user is following
-    schedule: List[Tuple[str, str]] = None  # List of (team1_id, team2_id) matchups
+    schedule: List[Tuple[str, str]] = None  # List of (home_team_id, away_team_id) matchups
     current_game_index: int = 0  # Which game we're on in the schedule
     standings: Dict[str, Dict] = None  # team_id -> {wins, losses, pct, ppg, opp_ppg}
     player_season_stats: Dict[str, Dict] = None  # "Team|PlayerName" -> {total_pts, total_reb, games, ...}
@@ -2650,11 +2818,11 @@ class Season:
 
         # Circle method: Fix one team, rotate the rest
         fixed = team_ids[0]
-        rotating = team_ids[1:]
+        rotating = team_ids[1:]  # 23 teams for 24-team league
 
         schedule = []
 
-        for round_num in range(num_teams - 1):
+        for round_num in range(num_teams - 1):  # 23 rounds
             round_games = []
 
             # Game 1: Fixed team vs first in rotating list
@@ -2664,11 +2832,13 @@ class Season:
             else:
                 round_games.append((opponent, fixed))
 
-            # Pair remaining: rotating[1] vs rotating[-1], etc.
+            # Games 2-12: Pair rotating teams from opposite ends
+            # rotating[1] vs rotating[-1], rotating[2] vs rotating[-2], etc.
             for i in range(1, len(rotating) // 2 + 1):
                 team_a = rotating[i]
                 team_b = rotating[-i]
 
+                # Alternate home/away each round
                 if round_num % 2 == 0:
                     round_games.append((team_a, team_b))
                 else:
@@ -2679,6 +2849,34 @@ class Season:
             # Rotate: move last element to first position
             rotating = [rotating[-1]] + rotating[:-1]
 
+        # Validate: no team should play itself
+        invalid = [(h, a) for h, a in schedule if h == a]
+        if invalid:
+            console.print(f"[red]ERROR: Schedule has teams playing themselves![/red]")
+            return self._simple_round_robin()
+
+        # Validate: each team appears exactly once per round
+        games_per_round = num_teams // 2
+        for round_idx in range(num_teams - 1):
+            round_start = round_idx * games_per_round
+            round_games = schedule[round_start:round_start + games_per_round]
+            teams_in_round = []
+            for home, away in round_games:
+                teams_in_round.extend([home, away])
+            if len(teams_in_round) != len(set(teams_in_round)):
+                console.print(f"[red]ERROR: Round {round_idx + 1} has duplicate teams![/red]")
+                return self._simple_round_robin()
+
+        return schedule
+
+    def _simple_round_robin(self) -> List[Tuple[str, str]]:
+        """Fallback: simple round-robin (all possible matchups, shuffled)"""
+        team_ids = list(self.teams.keys())
+        schedule = []
+        for i, team1_id in enumerate(team_ids):
+            for team2_id in team_ids[i+1:]:
+                schedule.append((team1_id, team2_id))
+        random.shuffle(schedule)
         return schedule
 
     def get_sorted_standings(self) -> List[Tuple[str, Dict]]:
@@ -2795,7 +2993,7 @@ class Season:
         return self.current_game_index >= len(self.schedule)
 
 
-def instant_sim_game(team1: Team, team2: Team):
+def instant_sim_game(team1: Team, team2: Team, home_team: Team = None):
     """
     Fast simulation using the live sim engine without UI (silent mode)
 
@@ -2809,12 +3007,26 @@ def instant_sim_game(team1: Team, team2: Team):
     - Comeback urgency logic (score-aware substitutions)
     - Proper rotation management
     - Natural game friction (turnovers, fouls, variance)
+    - Home court advantage (if home_team specified)
+
+    Args:
+        team1: First team (home team in season mode)
+        team2: Second team (away team in season mode)
+        home_team: Which team has home court advantage (None = neutral)
     """
+    # Safety check: prevent teams from playing themselves
+    if team1 == team2 or team1.name == team2.name:
+        console.print(f"[red]ERROR: {team1.name} cannot play itself! Skipping game.[/red]")
+        # Set a tie score to avoid issues
+        team1.score = 0
+        team2.score = 0
+        return
+
     team1.reset_for_new_game()
     team2.reset_for_new_game()
 
     # Use the live sim engine in silent mode (no UI, no delays)
-    game = GameSimulation(team1, team2, game_speed=0.0, silent_mode=True)
+    game = GameSimulation(team1, team2, game_speed=0.0, silent_mode=True, home_team=home_team)
     game.simulate_game()
 
     # Team scores and player stats are already populated by the simulation
@@ -2832,8 +3044,11 @@ def play_season_game_day(season: Season, game_speed: float = 0.6):
     # Keep searching through weeks until we find user's next game
     all_other_games_results = []
     user_game_played = False
+    weeks_processed = 0
+    max_weeks = 50  # Safety limit to prevent infinite loops
 
-    while not user_game_played and not season.is_season_complete():
+    while not user_game_played and not season.is_season_complete() and weeks_processed < max_weeks:
+        weeks_processed += 1
         # Collect this week's games (until we see a team that already played)
         teams_in_week = set()
         week_games = []
@@ -2863,8 +3078,14 @@ def play_season_game_day(season: Season, game_speed: float = 0.6):
             team1 = season.teams[team1_id]
             team2 = season.teams[team2_id]
 
+            # Determine home/away display (team1_id is always home in schedule)
+            if season.user_team_id == team1_id:
+                matchup_text = f"{team1.name} vs {team2.name} [HOME]"
+            else:
+                matchup_text = f"{team2.name} @ {team1.name} [AWAY]"
+
             console.print(f"\n[bold cyan]{'='*60}[/bold cyan]")
-            console.print(f"[bold]YOUR GAME: {team1.name} vs {team2.name}[/bold]")
+            console.print(f"[bold]YOUR GAME: {matchup_text}[/bold]")
             console.print(f"[bold cyan]{'='*60}[/bold cyan]\n")
 
             # Ask for game speed
@@ -2877,7 +3098,8 @@ def play_season_game_day(season: Season, game_speed: float = 0.6):
             team1.reset_for_new_game()
             team2.reset_for_new_game()
 
-            game = GameSimulation(team1, team2, game_speed=selected_speed)
+            # team1_id is home team (from schedule format)
+            game = GameSimulation(team1, team2, game_speed=selected_speed, home_team=team1)
             game.simulate_game()
 
             # Update standings
@@ -2896,36 +3118,53 @@ def play_season_game_day(season: Season, game_speed: float = 0.6):
 
         if games_to_sim:
             # Silent background simulation (no output during sim)
-            for game_idx, team1_id, team2_id in games_to_sim:
+            console.print(f"\n[dim]Simulating {len(games_to_sim)} other games in this round...[/dim]")
+            for idx, (game_idx, team1_id, team2_id) in enumerate(games_to_sim, 1):
                 team1 = season.teams[team1_id]
                 team2 = season.teams[team2_id]
 
-                # Use instant sim for speed
-                instant_sim_game(team1, team2)
+                try:
+                    # Show progress
+                    console.print(f"[dim]  {idx}/{len(games_to_sim)}: {team1.name} vs {team2.name}...[/dim]", end='\r')
 
-                # Update standings
-                season.update_standings(team1_id, team1.score, team2_id, team2.score)
+                    # Use instant sim for speed (team1 is home)
+                    instant_sim_game(team1, team2, home_team=team1)
 
-                # Aggregate player stats
-                season.aggregate_player_stats(team1_id, team1)
-                season.aggregate_player_stats(team2_id, team2)
+                    # Clear progress line
+                    console.print(" " * 80, end='\r')
 
-                # Find top scorer from each team
-                team1_top = max(team1.players, key=lambda p: p.points)
-                team2_top = max(team2.players, key=lambda p: p.points)
+                    # Update standings
+                    season.update_standings(team1_id, team1.score, team2_id, team2.score)
 
-                winner = team1.name if team1.score > team2.score else team2.name
-                all_other_games_results.append({
-                    'team1_name': team1.name,
-                    'team1_score': team1.score,
-                    'team1_top': f"{team1_top.name} {team1_top.points}pts",
-                    'team2_name': team2.name,
-                    'team2_score': team2.score,
-                    'team2_top': f"{team2_top.name} {team2_top.points}pts",
-                    'winner': winner
-                })
+                    # Aggregate player stats
+                    season.aggregate_player_stats(team1_id, team1)
+                    season.aggregate_player_stats(team2_id, team2)
 
-                season.current_game_index += 1
+                    # Find top scorer from each team
+                    team1_top = max(team1.players, key=lambda p: p.points)
+                    team2_top = max(team2.players, key=lambda p: p.points)
+
+                    winner = team1.name if team1.score > team2.score else team2.name
+                    all_other_games_results.append({
+                        'team1_name': team1.name,
+                        'team1_score': team1.score,
+                        'team1_top': f"{team1_top.name} {team1_top.points}pts",
+                        'team2_name': team2.name,
+                        'team2_score': team2.score,
+                        'team2_top': f"{team2_top.name} {team2_top.points}pts",
+                        'winner': winner
+                    })
+
+                    season.current_game_index += 1
+                except Exception as e:
+                    console.print(f"[red]Error simulating {team1.name} vs {team2.name}: {e}[/red]")
+                    season.current_game_index += 1  # Skip this game but continue
+
+    # Safety check for infinite loop
+    if weeks_processed >= max_weeks:
+        console.print(f"\n[red]Warning: Processed {weeks_processed} weeks. Stopping to prevent infinite loop.[/red]")
+        console.print(f"[yellow]Current game index: {season.current_game_index}/{len(season.schedule)}[/yellow]")
+        return False
 
     # Display all other game results in a nice table (including any from bye weeks)
     if all_other_games_results:
@@ -3081,65 +3320,103 @@ def show_my_team_stats(season: Season):
 
 def season_mode_menu(season: Season, game_speed: float):
     """Interactive menu for season mode"""
+    season_complete = False
+
     while True:
         console.print("\n[bold cyan]═══ SEASON MODE MENU ═══[/bold cyan]")
-        console.print(f"Games Played: {season.current_game_index}/{len(season.schedule)}")
-        console.print(f"Your Team: [bold]{season.teams[season.user_team_id].name}[/bold]\n")
 
-        console.print("  1. Play Next Game")
-        console.print("  2. View Standings")
-        console.print("  3. View My Team Stats")
-        console.print("  4. Stats Leaders (PPG)")
-        console.print("  5. Stats Leaders (RPG)")
-        console.print("  6. Stats Leaders (APG)")
-        console.print("  7. Simulate Rest of Season")
-        console.print("  8. Exit Season Mode\n")
+        if season_complete:
+            console.print("[bold green]SEASON COMPLETE![/bold green]")
+            console.print(f"Final Record: {season.standings[season.user_team_id]['wins']}-{season.standings[season.user_team_id]['losses']}")
+            console.print(f"Your Team: [bold]{season.teams[season.user_team_id].name}[/bold]\n")
+        else:
+            console.print(f"Games Played: {season.current_game_index}/{len(season.schedule)}")
+            console.print(f"Your Team: [bold]{season.teams[season.user_team_id].name}[/bold]\n")
 
-        choice = Prompt.ask("Select option", choices=["1", "2", "3", "4", "5", "6", "7", "8"], default="1")
+        # Adjust menu based on season completion
+        if season_complete:
+            console.print("  1. View Final Standings")
+            console.print("  2. View My Team Stats")
+            console.print("  3. Stats Leaders (PPG)")
+            console.print("  4. Stats Leaders (RPG)")
+            console.print("  5. Stats Leaders (APG)")
+            console.print("  6. Exit Season Mode\n")
 
-        if choice == "1":
-            # Play next game day
-            has_more_games = play_season_game_day(season, game_speed)
-            if not has_more_games:
-                console.print("\n[bold green]SEASON COMPLETE![/bold green]")
+            choice = Prompt.ask("Select option", choices=["1", "2", "3", "4", "5", "6"], default="1")
+
+            if choice == "1":
                 show_standings(season)
-                console.print("\n[bold]Final season standings shown above.[/bold]")
+            elif choice == "2":
+                show_my_team_stats(season)
+            elif choice == "3":
+                show_stats_leaders(season, 'ppg')
+            elif choice == "4":
+                show_stats_leaders(season, 'rpg')
+            elif choice == "5":
+                show_stats_leaders(season, 'apg')
+            elif choice == "6":
                 break
-        elif choice == "2":
-            show_standings(season)
-        elif choice == "3":
-            show_my_team_stats(season)
-        elif choice == "4":
-            show_stats_leaders(season, 'ppg')
-        elif choice == "5":
-            show_stats_leaders(season, 'rpg')
-        elif choice == "6":
-            show_stats_leaders(season, 'apg')
-        elif choice == "7":
-            # Sim rest of season (INSTANT - no display)
-            console.print("\n[yellow]Simulating remaining games...[/yellow]")
+        else:
+            console.print("  1. Play Next Game")
+            console.print("  2. View Standings")
+            console.print("  3. View My Team Stats")
+            console.print("  4. Stats Leaders (PPG)")
+            console.print("  5. Stats Leaders (RPG)")
+            console.print("  6. Stats Leaders (APG)")
+            console.print("  7. Simulate Rest of Season")
+            console.print("  8. Exit Season Mode\n")
 
-            # Grab remaining games and instant sim them
-            remaining_games = season.schedule[season.current_game_index:]
-            games_simmed = len(remaining_games)
+            choice = Prompt.ask("Select option", choices=["1", "2", "3", "4", "5", "6", "7", "8"], default="1")
 
-            for team1_id, team2_id in remaining_games:
-                team1 = season.teams[team1_id]
-                team2 = season.teams[team2_id]
+            if choice == "1":
+                # Play next game day
+                has_more_games = play_season_game_day(season, game_speed)
+                if not has_more_games:
+                    season_complete = True
+                    console.print("\n[bold green]═══ SEASON COMPLETE! ═══[/bold green]")
+                    show_standings(season)
+                    console.print("\n[bold cyan]You can now review final stats from the menu.[/bold cyan]")
+                    input("\nPress ENTER to continue...")
+                    # Don't break - continue to show menu with final stats
+            elif choice == "2":
+                show_standings(season)
+            elif choice == "3":
+                show_my_team_stats(season)
+            elif choice == "4":
+                show_stats_leaders(season, 'ppg')
+            elif choice == "5":
+                show_stats_leaders(season, 'rpg')
+            elif choice == "6":
+                show_stats_leaders(season, 'apg')
+            elif choice == "7":
+                # Sim rest of season (INSTANT - no display)
+                console.print("\n[yellow]Simulating remaining games...[/yellow]")
 
-                instant_sim_game(team1, team2)
+                # Grab remaining games and instant sim them
+                remaining_games = season.schedule[season.current_game_index:]
+                games_simmed = len(remaining_games)
 
-                season.update_standings(team1_id, team1.score, team2_id, team2.score)
-                season.aggregate_player_stats(team1_id, team1)
-                season.aggregate_player_stats(team2_id, team2)
+                for team1_id, team2_id in remaining_games:
+                    team1 = season.teams[team1_id]
+                    team2 = season.teams[team2_id]
 
-                season.current_game_index += 1
+                    instant_sim_game(team1, team2, home_team=team1)
 
-            console.print(f"\n[bold green]SEASON COMPLETE! ({games_simmed} games simulated)[/bold green]")
-            show_standings(season)
-            # DON'T break - return to menu so user can view stats
-        elif choice == "8":
-            break
+                    season.update_standings(team1_id, team1.score, team2_id, team2.score)
+                    season.aggregate_player_stats(team1_id, team1)
+                    season.aggregate_player_stats(team2_id, team2)
+
+                    season.current_game_index += 1
+
+                season_complete = True
+                console.print(f"\n[bold green]═══ SEASON COMPLETE! ═══[/bold green]")
+                console.print(f"[dim]({games_simmed} games simulated)[/dim]")
+                show_standings(season)
+                console.print("\n[bold cyan]You can now review final stats from the menu.[/bold cyan]")
+                input("\nPress ENTER to continue...")
+                # Don't break - continue to show menu with final stats
+            elif choice == "8":
+                break
 
 
 def select_starting_lineup(team: Team) -> List[int]:
@@ -3229,7 +3506,8 @@ def main():
     """Main game loop"""
     console.print("[bold magenta]═══════════════════════════════════════════[/bold magenta]")
     console.print("[bold cyan]  CLASSIC NBA TEXT BASKETBALL SIMULATOR  [/bold cyan]")
-    console.print(f"[bold yellow]              Version {VERSION}              [/bold yellow]")
+    version_display = f"{VERSION} Free Edition" if FREE_EDITION else VERSION
+    console.print(f"[bold yellow]              Version {version_display}              [/bold yellow]")
     console.print("[bold magenta]═══════════════════════════════════════════[/bold magenta]\n")
 
     # Load teams once
@@ -3237,21 +3515,91 @@ def main():
         teams_data = load_teams_from_csv()
         console.print(f"[green]Loaded {len(teams_data)} teams from database[/green]\n")
     except FileNotFoundError:
-        console.print("[red]Error: Could not find teams_free.csv or players.csv[/red]")
+        console.print("[red]Error: Could not find teams.csv or players.csv[/red]")
         console.print("[yellow]Make sure the CSV files are in the same directory as this script.[/yellow]")
         return
 
     # Main game loop
     while True:
-        # Ask for game mode
+        # Ask for game mode (conditional based on FREE_EDITION flag)
         console.print("\n[bold cyan]Select Game Mode:[/bold cyan]")
         console.print("  1. Single Game - Watch two teams play")
-        console.print("  2. User vs Computer - YOU control a team!\n")
 
-        mode_choice = Prompt.ask("Select mode", choices=["1", "2"], default="1")
+        if FREE_EDITION:
+            # Free Edition: Only single game modes
+            console.print("  2. User vs Computer - YOU control a team!\n")
+            mode_choice = Prompt.ask("Select mode", choices=["1", "2"], default="1")
+        else:
+            # Full Version: All modes including Season
+            console.print("  2. Season Mode - Follow your team through a full season")
+            console.print("  3. User vs Computer - YOU control a team!\n")
+            mode_choice = Prompt.ask("Select mode", choices=["1", "2", "3"], default="1")
 
-        if mode_choice == "2":
-            # USER VS COMPUTER MODE
+        # Route based on mode choice and edition
+        # In Free Edition: 1=Single Game, 2=User vs Computer
+        # In Full Version: 1=Single Game, 2=Season Mode, 3=User vs Computer
+
+        if mode_choice == "2" and not FREE_EDITION:
+            # SEASON MODE (Full Version only)
+            console.print("\n[bold cyan]═══ SEASON MODE SETUP ═══[/bold cyan]\n")
+
+            # Select user's team
+            console.print("[bold]Select your team to manage:[/bold]")
+            user_team = select_team(teams_data, 1)
+            user_team_id = None
+
+            # Find the team_id for the selected team
+            for tid, tdata in teams_data.items():
+                if tdata['name'] == user_team.name and tdata['year'] == user_team.year:
+                    user_team_id = tid
+                    break
+
+            if user_team_id is None:
+                console.print("[red]Error: Could not find team ID[/red]")
+                continue
+
+            # Create Team objects for all teams
+            season_teams = {}
+            for team_id, data in teams_data.items():
+                season_teams[team_id] = Team(
+                    data['name'],
+                    data['players'],
+                    data['pace_rating'],
+                    data['three_pt_rate'],
+                    data['def_rating'],
+                    data['year']
+                )
+
+            # Create season
+            season = Season(teams=season_teams, user_team_id=user_team_id)
+
+            console.print(f"\n[green]Season created![/green]")
+            console.print(f"Teams: {len(season.teams)}")
+            console.print(f"Games: {len(season.schedule)}")
+            console.print(f"Your Team: [bold]{season.teams[user_team_id].name}[/bold]\n")
+
+            # Ask for game speed
+            console.print("\n[bold cyan]Game Speed (for your team's games):[/bold cyan]")
+            console.print("  1. Cinema (3.5s)")
+            console.print("  2. Slow (1.2s)")
+            console.print("  3. Normal (0.6s)")
+            console.print("  4. Fast (0.3s)")
+            console.print("  5. Simulate (0.05s)\n")
+
+            speed_choice = Prompt.ask("Select speed", choices=["1", "2", "3", "4", "5"], default="3")
+            speed_map = {"1": 3.5, "2": 1.2, "3": 0.6, "4": 0.3, "5": 0.05}
+            game_speed = speed_map[speed_choice]
+
+            # Enter season mode menu
+            season_mode_menu(season, game_speed)
+
+            # After season ends, ask if they want to play again
+            play_again = Prompt.ask("\n[bold cyan]Return to main menu?[/bold cyan]", choices=["y", "n"], default="y")
+            if play_again.lower() != "y":
+                break
+
+        elif mode_choice == "3" or (mode_choice == "2" and FREE_EDITION):
+            # USER VS COMPUTER MODE (mode 3 in Full, mode 2 in Free)
             console.print("\n[bold cyan]═══ USER VS COMPUTER MODE ═══[/bold cyan]\n")
 
             # Select user's team
