@@ -5,8 +5,8 @@ A nostalgic text-based basketball simulation featuring cross-era matchups with l
 ## What's Included
 
 - `Basketball-Sim-Free` — the game (Mac binary)
-- `teams_free.csv` — team database (23 legendary rosters)
-- `players.csv` — 360+ players with historical statistics
+- `teams_free.csv` — team database (24 legendary rosters)
+- `players.csv` — 370+ players with historical statistics
 
 ## How to Run (Mac)
 
@@ -24,7 +24,7 @@ A nostalgic text-based basketball simulation featuring cross-era matchups with l
    ./Basketball-Sim-Free
    ```
 
-## Teams Available (23 Championship Rosters)
+## Teams Available (24 Championship Rosters)
 
 ### Pre-3PT Era (1965–1979)
 - 1965 Boston (Russell Dynasty)
@@ -34,7 +34,6 @@ A nostalgic text-based basketball simulation featuring cross-era matchups with l
 
 ### Early 3PT Era (1980–1999)
 - 1983 Philadelphia (Moses Malone)
-- 1985 Chicago (Rookie MJ)
 - 1986 Boston (Bird, McHale, Parish)
 - 1987 Los Angeles (Showtime)
 - 1989 Detroit (Bad Boys)
@@ -53,6 +52,7 @@ A nostalgic text-based basketball simulation featuring cross-era matchups with l
 
 ### Modern Era (2017–2024)
 - 2017 Golden State (Durant Joins)
+- 2021 Milwaukee (Giannis's Title Run)
 - 2023 Denver (Jokic's Masterpiece)
 - 2024 Boston (Banner 18)
 - 2024 Oklahoma City (Best Record in West)
