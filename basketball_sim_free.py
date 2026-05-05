@@ -17,8 +17,7 @@ import random
 import time
 import csv
 import sys
-import tty
-import termios
+import platform
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Optional
 from rich.console import Console
@@ -29,19 +28,29 @@ from rich.layout import Layout
 from rich import box
 from rich.prompt import Prompt
 
+if platform.system() != 'Windows':
+    import tty
+    import termios
+else:
+    import msvcrt
+
 console = Console()
 
 
 def getch():
-    """Get a single character from user input without requiring ENTER"""
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        ch = sys.stdin.read(1)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-    return ch
+    """Get a single character from user input without requiring ENTER (cross-platform)"""
+    if platform.system() == 'Windows':
+        ch = msvcrt.getch()
+        return ch.decode('utf-8') if isinstance(ch, bytes) else ch
+    else:
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            ch = sys.stdin.read(1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        return ch
 
 def get_last_name(full_name: str) -> str:
     """Extract last name from full name for shorter play-by-play text"""

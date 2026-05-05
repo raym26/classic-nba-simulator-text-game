@@ -71,4 +71,28 @@ players_old.csv
 
 # Full version (not public)
 basketball_sim_v2.py
+basketball_sim_v2_4.py
 teams.csv
+
+# Internal dev files
+CLAUDE.md
+NOTES.md
+VOICE.md
+
+# Pro build artifacts
+Basketball-Sim-Pro.spec
+CBA_Pro.zip
+PC_version/
+
+# Internal directories
+build_scripts/
+tests/
+docs/
+marketing/
+
+# Game data / dev utilities
+box_scores.csv
+games.csv
+sim_data_1.xlsx
+parse_game.py
+series_sim.py
