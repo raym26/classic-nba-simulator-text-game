@@ -18,6 +18,9 @@ import time
 import csv
 import sys
 import platform
+if platform.system() != 'Windows':
+    import tty
+    import termios
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Optional
 from rich.console import Console
@@ -28,29 +31,22 @@ from rich.layout import Layout
 from rich import box
 from rich.prompt import Prompt
 
-if platform.system() != 'Windows':
-    import tty
-    import termios
-else:
-    import msvcrt
-
 console = Console()
 
 
 def getch():
-    """Get a single character from user input without requiring ENTER (cross-platform)"""
+    """Get a single character from user input without requiring ENTER"""
     if platform.system() == 'Windows':
-        ch = msvcrt.getch()
-        return ch.decode('utf-8') if isinstance(ch, bytes) else ch
-    else:
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-            ch = sys.stdin.read(1)
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-        return ch
+        import msvcrt
+        return msvcrt.getwch()
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    return ch
 
 def get_last_name(full_name: str) -> str:
     """Extract last name from full name for shorter play-by-play text"""
@@ -97,7 +93,10 @@ class Player:
     turnovers: int = 0  # Turnovers (offensive stat)
     minutes_played: float = 0.0  # Minutes played in current game
     game_target_minutes: float = 0.0  # Target minutes for this specific game (sampled from distribution)
-    
+
+    def __hash__(self):
+        return hash(self.name)
+
     def attempt_shot(self, def_rating: float = 1.0, passer = None, home_court_boost: float = 1.0) -> bool:
         """Attempt a two-point field goal based on player's shooting percentage
 
@@ -457,6 +456,16 @@ class Team:
         # 48-minute game, so at 12 minutes elapsed = 25% through game
         game_progress = game_minutes_elapsed / 48.0
 
+        # Foul limit for sub-ins: don't put a player back in if they're already in foul trouble
+        if game_minutes_elapsed < 12:
+            foul_sub_in_limit = 2   # Q1: sit at 2 fouls
+        elif game_minutes_elapsed < 24:
+            foul_sub_in_limit = 3   # Q2: sit at 3 fouls
+        elif game_minutes_elapsed < 36:
+            foul_sub_in_limit = 4   # Q3: sit at 4 fouls
+        else:
+            foul_sub_in_limit = 5   # Q4/OT: sit at 5 fouls
+
         # Game state calculations
         score_diff = my_score - opponent_score  # Negative if losing
         time_remaining = 48.0 - game_minutes_elapsed
@@ -556,6 +565,9 @@ class Team:
                     if bench_player.game_target_minutes == 0:
                         continue
 
+                    if bench_player.fouls >= foul_sub_in_limit:
+                        continue
+
                     expected_minutes = bench_player.game_target_minutes * game_progress
                     deficit = expected_minutes - bench_player.minutes_played
 
@@ -577,6 +589,9 @@ class Team:
                         continue
 
                     if bench_player.game_target_minutes == 0:
+                        continue
+
+                    if bench_player.fouls >= foul_sub_in_limit:
                         continue
 
                     expected_minutes = bench_player.game_target_minutes * game_progress
@@ -871,14 +886,16 @@ class GameSimulation:
         # Simulate passes - show max 1-2 in play description
         for i in range(num_passes):
             passer = self.possession.select_passer(exclude=current_player)
+            # Exclude both current passer and anyone who already touched ball
+            exclude_list = players_touched | {passer}
             receiver = self.possession.select_passer(exclude=passer)
             # Make sure receiver is different from everyone who touched ball
             attempts = 0
-            while receiver.name in players_touched and attempts < 5:
+            while receiver in players_touched and attempts < 5:
                 receiver = self.possession.select_passer(exclude=passer)
                 attempts += 1
 
-            players_touched.add(passer.name)
+            players_touched.add(passer)
             last_passer = passer  # Remember who passed (for assists and playmaker boost)
             current_player = receiver
 
@@ -909,6 +926,18 @@ class GameSimulation:
                 turnover_types = ["Bad pass", "Traveling", "Offensive foul", "Lost handle"]
                 error_type = random.choice(turnover_types)
                 plays.append(f"{handler_name} turns it over - {error_type.lower()}")
+                if error_type == "Offensive foul":
+                    ball_handler.fouls += 1
+                    if ball_handler.fouls >= 6:
+                        plays.append(f"[bold red]{handler_name} fouls out![/bold red]")
+                        substitute = self.possession.substitute_fouled_out_player(ball_handler)
+                        if substitute:
+                            plays.append(f"{get_last_name(substitute.name)} checks in")
+                    elif self.is_foul_trouble(ball_handler):
+                        plays.append(f"[yellow]{handler_name} in foul trouble, heads to bench[/yellow]")
+                        substitute = self.possession.substitute_fouled_out_player(ball_handler)
+                        if substitute:
+                            plays.append(f"{get_last_name(substitute.name)} checks in")
 
             return " | ".join(plays), scored
 
@@ -969,9 +998,9 @@ class GameSimulation:
 
         if shot_type == 'three':
             # Build play description with passes (max 1-2)
-            if num_passes >= 2 and first_passer and last_passer and first_passer != last_passer and last_passer != shooter:
+            if num_passes >= 2 and first_passer and last_passer:
                 plays.append(f"{get_last_name(first_passer.name)} to {get_last_name(last_passer.name)} to {shooter_name}")
-            elif num_passes >= 1 and last_passer and last_passer != shooter:
+            elif num_passes == 1 and last_passer:
                 plays.append(f"{get_last_name(last_passer.name)} finds {shooter_name}")
 
             plays.append(f"{shooter_name} pulls up for three...")
@@ -1062,9 +1091,9 @@ class GameSimulation:
                     plays.append(f"Free throws: {' '.join(ft_results)}")
         else:
             # 2PT shot - build play description with passes (max 1-2)
-            if num_passes >= 2 and first_passer and last_passer and first_passer != last_passer and last_passer != shooter:
+            if num_passes >= 2 and first_passer and last_passer:
                 plays.append(f"{get_last_name(first_passer.name)} to {get_last_name(last_passer.name)} to {shooter_name}")
-            elif num_passes >= 1 and last_passer and last_passer != shooter:
+            elif num_passes == 1 and last_passer:
                 plays.append(f"{get_last_name(last_passer.name)} finds {shooter_name}")
 
             # Varied shot attempt descriptions
@@ -1178,7 +1207,6 @@ class GameSimulation:
             else:
                 rebounder = self.possession.select_rebounder()
                 rebounder.get_rebound()
-                # Offensive rebound — possession continues (next simulate_possession handles the new shot)
                 plays.append(f"Offensive rebound: {get_last_name(rebounder.name)}")
 
         return " | ".join(plays), scored
@@ -1377,12 +1405,7 @@ class GameSimulation:
                     self.team2.check_substitutions()
 
             # Switch possession (always switch after a score, even on putbacks)
-            possession_continues = (
-                "Offensive rebound" in play_desc
-                or "retains possession" in play_desc
-                or "Non-shooting foul" in play_desc
-            )
-            if scored or not possession_continues:
+            if scored or ("Offensive rebound" not in play_desc and "retains possession" not in play_desc and "Non-shooting foul" not in play_desc):
                 self.possession = self.team2 if self.possession == self.team1 else self.team1
 
             # Update time
@@ -1452,16 +1475,13 @@ class GameSimulation:
                 base_time = random.randint(min_time, max_time)
                 possession_time = int(base_time / self.possession.pace_rating)
 
-                current_possession = self.possession  # Remember who was attacking
                 play_desc, scored = self.simulate_possession()
-                # Prefix with team name so it's clear who had the ball
-                team_prefix = f"[{current_possession.name}] "
                 # Add score inline for slow watching (makes play-by-play self-explanatory)
                 if scored and self.game_speed >= 1.0:  # Only at slower speeds
-                    play_desc_with_score = f"{team_prefix}{play_desc} [{self.team1.score}-{self.team2.score}]"
+                    play_desc_with_score = f"{play_desc} [{self.team1.score}-{self.team2.score}]"
                     self.play_by_play.append(play_desc_with_score)
                 else:
-                    self.play_by_play.append(f"{team_prefix}{play_desc}")
+                    self.play_by_play.append(play_desc)
 
                 # Update minutes played for both teams
                 self.team1.update_minutes(possession_time)
@@ -1481,12 +1501,7 @@ class GameSimulation:
                         self.team2.check_substitutions()
 
                 # Switch possession (always switch after a score, even on putbacks)
-                possession_continues = (
-                    "Offensive rebound" in play_desc
-                    or "retains possession" in play_desc
-                    or "Non-shooting foul" in play_desc
-                )
-                if scored or not possession_continues:
+                if scored or ("Offensive rebound" not in play_desc and "retains possession" not in play_desc and "Non-shooting foul" not in play_desc):
                     self.possession = self.team2 if self.possession == self.team1 else self.team1
 
                 # Update time
@@ -1729,8 +1744,8 @@ def load_teams_from_csv() -> Dict[str, Dict]:
     """Load teams and players from CSV files"""
     teams_data = {}
 
-    # Load teams (use trademark-safe names for Free Edition)
-    teams_file = 'teams_free.csv' if FREE_EDITION else 'teams.csv'
+    # Always use trademark-safe team names
+    teams_file = 'teams_free.csv'
     with open(teams_file, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -2240,9 +2255,6 @@ class InteractiveGame(GameSimulation):
                                 return " → ".join(plays), False, None
                         # If not auto-resolved, user continues possession
                         plays.append(f"Offensive rebound: {rebounder.name}")
-                        self.play_by_play.append(" → ".join(plays))
-                        console.print(f"\n[bold green]OFFENSIVE REBOUND! {rebounder.name} has the ball! (Shot clock: 14)[/bold green]")
-                        time.sleep(1.0)
                         ball_handler = rebounder
                         self.shot_clock = 14  # Reset shot clock after offensive rebound (NBA rule)
 
@@ -2359,9 +2371,6 @@ class InteractiveGame(GameSimulation):
                                 return " → ".join(plays), False, None
                         # If not auto-resolved, user continues possession
                         plays.append(f"Offensive rebound: {rebounder.name}")
-                        self.play_by_play.append(" → ".join(plays))
-                        console.print(f"\n[bold green]OFFENSIVE REBOUND! {rebounder.name} has the ball! (Shot clock: 14)[/bold green]")
-                        time.sleep(1.0)
                         ball_handler = rebounder
                         self.shot_clock = 14  # Reset shot clock after offensive rebound (NBA rule)
 
@@ -2506,7 +2515,7 @@ class InteractiveGame(GameSimulation):
             # Check the LAST action in the play (after final →)
             last_action = play_desc.split("→")[-1].strip() if "→" in play_desc else play_desc
 
-            # Possession continues if: offensive rebound, non-shooting foul (team retains ball), or explicit flag
+            # Possession continues if: offensive rebound, non-shooting foul, or explicit flag
             continues_possession = (
                 "Offensive rebound:" in last_action
                 or "retains possession" in last_action
