@@ -48,6 +48,15 @@ def getch():
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
     return ch
 
+def flush_stdin():
+    """Discard buffered keystrokes before showing an important prompt."""
+    if platform.system() == 'Windows':
+        import msvcrt
+        while msvcrt.kbhit():
+            msvcrt.getwch()
+    else:
+        termios.tcflush(sys.stdin, termios.TCIFLUSH)
+
 def get_last_name(full_name: str) -> str:
     """Extract last name from full name for shorter play-by-play text"""
     parts = full_name.split()
@@ -74,6 +83,7 @@ class Player:
     fta_pg: float = 2.0  # Free throw attempts per game (for foul probability weighting)
     usage_rate: float = 20.0  # Usage rate - % of team possessions used when player is on floor
     starter: int = 0  # 1 = starter, 0 = bench
+    three_pa_pg: float = 0.0  # Three-point attempts per game (0 = not configured, use legacy three_pt_pct==0 check)
 
     # Game stats (will be updated during simulation)
     points: int = 0
@@ -97,17 +107,18 @@ class Player:
     def __hash__(self):
         return hash(self.name)
 
-    def attempt_shot(self, def_rating: float = 1.0, passer = None, home_court_boost: float = 1.0) -> bool:
+    def attempt_shot(self, def_rating: float = 1.0, passer = None, home_court_boost: float = 1.0, fatigue: float = 1.0) -> bool:
         """Attempt a two-point field goal based on player's shooting percentage
 
         Args:
             def_rating: Defensive modifier (lower = better defense)
             passer: Optional Player who assisted (boosts shooting % based on APG)
             home_court_boost: Home court advantage multiplier (default 1.0 = neutral court)
+            fatigue: Fatigue multiplier (1.0 = fresh, <1.0 = tired)
         """
         self.fga += 1
         self.two_pta += 1  # Track 2PT attempts separately
-        effective_pct = self.two_pt_pct * def_rating
+        effective_pct = self.two_pt_pct * def_rating * fatigue
 
         # PLAYMAKER BOOST: Good passers find better shots for teammates
         # +0.3% per APG, capped at 3.5% (elite playmakers like Magic, Stockton, Kidd)
@@ -125,17 +136,18 @@ class Player:
             self.points += 2
         return made
 
-    def attempt_three(self, def_rating: float = 1.0, passer = None, home_court_boost: float = 1.0) -> bool:
+    def attempt_three(self, def_rating: float = 1.0, passer = None, home_court_boost: float = 1.0, fatigue: float = 1.0) -> bool:
         """Attempt a three-pointer based on player's three-point percentage
 
         Args:
             def_rating: Defensive modifier (lower = better defense)
             passer: Optional Player who assisted (boosts shooting % based on APG)
             home_court_boost: Home court advantage multiplier (default 1.0 = neutral court)
+            fatigue: Fatigue multiplier (1.0 = fresh, <1.0 = tired)
         """
         self.fga += 1
         self.three_pta += 1  # Track 3PT attempts separately
-        effective_pct = self.three_pt_pct * def_rating
+        effective_pct = self.three_pt_pct * def_rating * fatigue
 
         # PLAYMAKER BOOST: Good passers find better shots for teammates
         # +0.3% per APG, capped at 3.5% (elite playmakers like Magic, Stockton, Kidd)
@@ -516,6 +528,11 @@ class Team:
                 players_to_sub_out.append((i, player_idx, 999))
                 continue
 
+            # FOUL TROUBLE ENFORCEMENT: Force bench any player with 4+ fouls before Q4
+            if in_foul_trouble:
+                players_to_sub_out.append((i, player_idx, 998))
+                continue
+
             if is_superstar and is_close_game and not in_foul_trouble:
                 # Superstar stays on court in close games (and hasn't hit cap)
                 continue
@@ -523,12 +540,12 @@ class Team:
             # How much of their target minutes should they have played by now?
             expected_minutes = player.game_target_minutes * game_progress
 
-            # Are they ahead of pace? Use smaller buffer early in game (0.5 min) to encourage rotation
-            # Increase buffer later in game to lock in key players (1.5 min in 4th quarter)
+            # Buffer scales with target minutes: high-minute players play longer stints before resting
+            # (Rodman at 32.6 min gets ~2.0 min buffer; bench player at 10 min gets 0.6 min)
             if game_progress < 0.75:  # First 3 quarters
-                buffer = 0.5
+                buffer = max(0.5, player.game_target_minutes * 0.06)
             else:  # 4th quarter - tighter rotation
-                buffer = 1.5
+                buffer = max(1.5, player.game_target_minutes * 0.06)
 
             # Superstars in non-close games still get some buffer before subbing
             if is_superstar and not is_blowout:
@@ -546,12 +563,14 @@ class Team:
         for i in range(max_subs):
             lineup_pos, player_idx, _ = players_to_sub_out[i]
 
-            # Find best substitute: player most behind their minute pace (position-aware)
+            # Find best substitute: starters get priority over bench players (tier 1 vs tier 2)
             player_being_subbed = self.players[player_idx]
             compatible_positions = self.get_position_compatible(player_being_subbed.position)
 
             best_sub_idx = None
             best_deficit = -999
+            best_starter_idx = None
+            best_starter_deficit = -999
 
             # First try: Find position-compatible substitute
             for position in compatible_positions:
@@ -565,7 +584,9 @@ class Team:
                     if bench_player.game_target_minutes == 0:
                         continue
 
-                    if bench_player.fouls >= foul_sub_in_limit:
+                    # Superstars (elite closers) can play with one extra foul vs regular players
+                    player_foul_limit = foul_sub_in_limit + (1 if bench_player.usage_rate > 25 else 0)
+                    if bench_player.fouls >= player_foul_limit:
                         continue
 
                     expected_minutes = bench_player.game_target_minutes * game_progress
@@ -574,16 +595,27 @@ class Team:
                     # Only sub in players who are behind pace (deficit > 0)
                     # and haven't already hit their target
                     if deficit > 0 and bench_player.minutes_played < bench_player.game_target_minutes * 0.99:
-                        if deficit > best_deficit:
-                            best_sub_idx = bench_idx
-                            best_deficit = deficit
+                        if bench_player.starter:
+                            if deficit > best_starter_deficit:
+                                best_starter_idx = bench_idx
+                                best_starter_deficit = deficit
+                        else:
+                            if deficit > best_deficit:
+                                best_sub_idx = bench_idx
+                                best_deficit = deficit
 
-                # If we found a substitute at this position level, use it
+                # Starters always get the call if available; only fall back to bench if no starter needs minutes
+                if best_starter_idx is not None:
+                    best_sub_idx = best_starter_idx
+                    break
                 if best_sub_idx is not None:
                     break
 
             # Second try: If no position match, just take best available
             if best_sub_idx is None:
+                best_starter_idx = None
+                best_starter_deficit = -999
+                best_deficit = -999
                 for bench_idx, bench_player in enumerate(self.players):
                     if bench_idx not in allowed_indices or bench_idx in self.on_court_indices:
                         continue
@@ -591,16 +623,25 @@ class Team:
                     if bench_player.game_target_minutes == 0:
                         continue
 
-                    if bench_player.fouls >= foul_sub_in_limit:
+                    player_foul_limit = foul_sub_in_limit + (1 if bench_player.usage_rate > 25 else 0)
+                    if bench_player.fouls >= player_foul_limit:
                         continue
 
                     expected_minutes = bench_player.game_target_minutes * game_progress
                     deficit = expected_minutes - bench_player.minutes_played
 
                     if deficit > 0 and bench_player.minutes_played < bench_player.game_target_minutes * 0.99:
-                        if deficit > best_deficit:
-                            best_sub_idx = bench_idx
-                            best_deficit = deficit
+                        if bench_player.starter:
+                            if deficit > best_starter_deficit:
+                                best_starter_idx = bench_idx
+                                best_starter_deficit = deficit
+                        else:
+                            if deficit > best_deficit:
+                                best_sub_idx = bench_idx
+                                best_deficit = deficit
+
+                if best_starter_idx is not None:
+                    best_sub_idx = best_starter_idx
 
             # Make the substitution
             if best_sub_idx is not None:
@@ -757,7 +798,7 @@ class GameSimulation:
             return (12, 16)
         elif year < 2010:
             # 1990s-2000s: SLOWEST ERA - defensive grind, ISO-heavy (~184 total)
-            return (14, 18)
+            return (14, 16)
         else:
             # 2010s+: Modern pace and space (~200 total possessions)
             return (13, 17)
@@ -942,8 +983,8 @@ class GameSimulation:
             return " | ".join(plays), scored
 
         # Check for non-shooting foul (before shot attempt)
-        # 10% chance of non-shooting foul during possession
-        if random.random() < 0.10:
+        # 6% chance of non-shooting foul during possession
+        if random.random() < 0.06:
             offensive_player = self.possession.select_shooter() if current_player is None else current_player
             fouling_player, fouled_out = self.commit_foul(defending_team, offensive_player)
             fouler_name = get_last_name(fouling_player.name)
@@ -965,8 +1006,8 @@ class GameSimulation:
                 if substitute:
                     plays.append(f"{get_last_name(substitute.name)} checks in")
 
-            # Check bonus situation (5+ team fouls = 2 FTs)
-            if defending_team.team_fouls >= 5:
+            # Check bonus situation (4+ team fouls = 2 FTs)
+            if defending_team.team_fouls >= 4:
                 plays.append(f"Bonus - {off_player_name} at the line")
                 ft_results = []
                 for i in range(2):
@@ -986,22 +1027,54 @@ class GameSimulation:
         shooter_name = get_last_name(shooter.name)
         def_rating = defending_team.def_rating
 
+        # CRUNCH TIME: star players take over in close Q4/OT situations
+        my_score = self.possession.score
+        opp_score = defending_team.score
+        if abs(my_score - opp_score) <= 5 and self.game_minutes_elapsed >= 42:
+            on_court = [self.possession.players[i] for i in self.possession.on_court_indices]
+            if any(p.usage_rate > 25 for p in on_court):
+                crunch_weights = [p.usage_rate * (2.0 if p.usage_rate > 25 else 1.0) for p in on_court]
+                shooter = random.choices(on_court, weights=crunch_weights)[0]
+                shooter_name = get_last_name(shooter.name)
+
+        # FATIGUE: players ahead of their minute target shoot less efficiently
+        # Superstars have more endurance — smaller penalty and higher floor
+        game_progress = self.game_minutes_elapsed / 48.0
+        expected_min = shooter.game_target_minutes * game_progress if game_progress > 0 else 0
+        surplus = shooter.minutes_played - expected_min
+        fatigue_rate = 0.010 if shooter.usage_rate > 25 else 0.015
+        fatigue_floor = 0.92 if shooter.usage_rate > 25 else 0.88
+        fatigue = max(fatigue_floor, 1.0 - max(0.0, surplus * fatigue_rate))
+
         # Decide shot type (use team-specific three-point rate)
         # BUT only if shooter can actually shoot 3s (three_pt_pct > 0)
         three_rate = self.possession.three_pt_rate
         two_rate = 1.0 - three_rate
         shot_type = random.choices(['two', 'three'], weights=[two_rate, three_rate])[0]
 
-        # Force 2PT if shooter can't shoot 3s (prevents Wilt, Duncan, Kareem from bricking 3s)
-        if shot_type == 'three' and shooter.three_pt_pct == 0:
+        # Force 2PT if shooter has no three-point game:
+        # - three_pt_pct == 0: explicitly a non-shooter
+        # - three_pa_pg set but below 0.5/game: small-sample artifact (e.g. 1-for-1 career)
+        low_propensity = shooter.three_pa_pg > 0 and shooter.three_pa_pg < 0.5
+        if shot_type == 'three' and (shooter.three_pt_pct == 0 or low_propensity):
             shot_type = 'two'
 
         if shot_type == 'three':
             # Build play description with passes (max 1-2)
             if num_passes >= 2 and first_passer and last_passer:
-                plays.append(f"{get_last_name(first_passer.name)} to {get_last_name(last_passer.name)} to {shooter_name}")
+                fp = get_last_name(first_passer.name)
+                lp = get_last_name(last_passer.name)
+                if fp == lp:
+                    if lp != shooter_name:
+                        plays.append(f"{lp} finds {shooter_name}")
+                elif lp == shooter_name:
+                    plays.append(f"{fp} to {shooter_name}")
+                else:
+                    plays.append(f"{fp} to {lp} to {shooter_name}")
             elif num_passes == 1 and last_passer:
-                plays.append(f"{get_last_name(last_passer.name)} finds {shooter_name}")
+                lp = get_last_name(last_passer.name)
+                if lp != shooter_name:
+                    plays.append(f"{lp} finds {shooter_name}")
 
             plays.append(f"{shooter_name} pulls up for three...")
 
@@ -1017,7 +1090,7 @@ class GameSimulation:
             else:
                 # Pass last_passer for playmaker boost (if there were passes)
                 home_boost = self.get_home_court_boost(self.possession)
-                made = shooter.attempt_three(def_rating, passer=last_passer if num_passes > 0 else None, home_court_boost=home_boost)
+                made = shooter.attempt_three(def_rating, passer=last_passer if num_passes > 0 else None, home_court_boost=home_boost, fatigue=fatigue)
 
                 # Check for foul (weighted by FTA per game)
                 foul_probability = min(0.3, shooter.fta_pg * 0.02)
@@ -1092,9 +1165,19 @@ class GameSimulation:
         else:
             # 2PT shot - build play description with passes (max 1-2)
             if num_passes >= 2 and first_passer and last_passer:
-                plays.append(f"{get_last_name(first_passer.name)} to {get_last_name(last_passer.name)} to {shooter_name}")
+                fp = get_last_name(first_passer.name)
+                lp = get_last_name(last_passer.name)
+                if fp == lp:
+                    if lp != shooter_name:
+                        plays.append(f"{lp} finds {shooter_name}")
+                elif lp == shooter_name:
+                    plays.append(f"{fp} to {shooter_name}")
+                else:
+                    plays.append(f"{fp} to {lp} to {shooter_name}")
             elif num_passes == 1 and last_passer:
-                plays.append(f"{get_last_name(last_passer.name)} finds {shooter_name}")
+                lp = get_last_name(last_passer.name)
+                if lp != shooter_name:
+                    plays.append(f"{lp} finds {shooter_name}")
 
             # Varied shot attempt descriptions
             shot_attempts = [
@@ -1117,7 +1200,7 @@ class GameSimulation:
             else:
                 # Pass last_passer for playmaker boost (if there were passes)
                 home_boost = self.get_home_court_boost(self.possession)
-                made = shooter.attempt_shot(def_rating, passer=last_passer if num_passes > 0 else None, home_court_boost=home_boost)
+                made = shooter.attempt_shot(def_rating, passer=last_passer if num_passes > 0 else None, home_court_boost=home_boost, fatigue=fatigue)
 
                 # Check for foul (weighted by FTA per game)
                 foul_probability = min(0.3, shooter.fta_pg * 0.02)
@@ -1228,8 +1311,8 @@ class GameSimulation:
         time_text = f"Q{self.quarter}  {mins}:{secs:02d}"
 
         # Team fouls (highlight if in bonus)
-        team1_fouls = f"[bold red]{self.team1.team_fouls}[/bold red]" if self.team1.team_fouls >= 5 else str(self.team1.team_fouls)
-        team2_fouls = f"[bold red]{self.team2.team_fouls}[/bold red]" if self.team2.team_fouls >= 5 else str(self.team2.team_fouls)
+        team1_fouls = f"[bold red]{self.team1.team_fouls}[/bold red]" if self.team1.team_fouls >= 4 else str(self.team1.team_fouls)
+        team2_fouls = f"[bold red]{self.team2.team_fouls}[/bold red]" if self.team2.team_fouls >= 4 else str(self.team2.team_fouls)
         foul_text = f"Fouls: {team1_fouls} - {team2_fouls}"
 
         header_table = Table.grid(expand=True)
@@ -1778,7 +1861,8 @@ def load_teams_from_csv() -> Dict[str, Dict]:
                     ppg=float(row['ppg']),
                     fta_pg=float(row['fta_pg']),
                     usage_rate=float(row['usage_rate']),
-                    starter=int(row.get('starter', 0))
+                    starter=int(row.get('starter', 0)),
+                    three_pa_pg=float(row.get('three_pa_pg', 0.0))
                 )
                 teams_data[team_id]['players'].append(player)
     
@@ -1847,8 +1931,8 @@ class InteractiveGame(GameSimulation):
         secs = self.time_remaining % 60
         time_text = f"Q{self.quarter}  {mins}:{secs:02d}"
 
-        team1_fouls = f"[bold red]{self.team1.team_fouls}[/bold red]" if self.team1.team_fouls >= 5 else str(self.team1.team_fouls)
-        team2_fouls = f"[bold red]{self.team2.team_fouls}[/bold red]" if self.team2.team_fouls >= 5 else str(self.team2.team_fouls)
+        team1_fouls = f"[bold red]{self.team1.team_fouls}[/bold red]" if self.team1.team_fouls >= 4 else str(self.team1.team_fouls)
+        team2_fouls = f"[bold red]{self.team2.team_fouls}[/bold red]" if self.team2.team_fouls >= 4 else str(self.team2.team_fouls)
         foul_text = f"Fouls: {team1_fouls} - {team2_fouls}"
 
         shot_clock_text = ""
@@ -2157,7 +2241,11 @@ class InteractiveGame(GameSimulation):
                     fouled = False  # Can't foul on clean block
                 else:
                     home_boost = self.get_home_court_boost(self.user_team)
-                    made = ball_handler.attempt_shot(self.cpu_team.def_rating, home_court_boost=home_boost)
+                    gp = self.game_minutes_elapsed / 48.0
+                    surplus = ball_handler.minutes_played - (ball_handler.game_target_minutes * gp if gp > 0 else 0)
+                    _fr = 0.010 if ball_handler.usage_rate > 25 else 0.015
+                    fatigue = max(0.92 if ball_handler.usage_rate > 25 else 0.88, 1.0 - max(0.0, surplus * _fr))
+                    made = ball_handler.attempt_shot(self.cpu_team.def_rating, home_court_boost=home_boost, fatigue=fatigue)
 
                     # Check for foul (weighted by FTA per game)
                     foul_probability = min(0.3, ball_handler.fta_pg * 0.02)
@@ -2235,7 +2323,11 @@ class InteractiveGame(GameSimulation):
                             # CPU auto-resolves putback (possession will end)
                             if random.random() < 0.45:
                                 home_boost = self.get_home_court_boost(self.user_team)
-                                made = rebounder.attempt_shot(self.cpu_team.def_rating, home_court_boost=home_boost)
+                                gp = self.game_minutes_elapsed / 48.0
+                                surplus = rebounder.minutes_played - (rebounder.game_target_minutes * gp if gp > 0 else 0)
+                                _fr = 0.010 if rebounder.usage_rate > 25 else 0.015
+                                fatigue = max(0.92 if rebounder.usage_rate > 25 else 0.88, 1.0 - max(0.0, surplus * _fr))
+                                made = rebounder.attempt_shot(self.cpu_team.def_rating, home_court_boost=home_boost, fatigue=fatigue)
                                 if made:
                                     self.user_team.score += 2
                                     plays.append(f"{rebounder.name} gets the board and tips it in!")
@@ -2273,7 +2365,11 @@ class InteractiveGame(GameSimulation):
                     fouled = False  # Can't foul on clean block
                 else:
                     home_boost = self.get_home_court_boost(self.user_team)
-                    made = ball_handler.attempt_three(self.cpu_team.def_rating, home_court_boost=home_boost)
+                    gp = self.game_minutes_elapsed / 48.0
+                    surplus = ball_handler.minutes_played - (ball_handler.game_target_minutes * gp if gp > 0 else 0)
+                    _fr = 0.010 if ball_handler.usage_rate > 25 else 0.015
+                    fatigue = max(0.92 if ball_handler.usage_rate > 25 else 0.88, 1.0 - max(0.0, surplus * _fr))
+                    made = ball_handler.attempt_three(self.cpu_team.def_rating, home_court_boost=home_boost, fatigue=fatigue)
 
                     # Check for foul (weighted by FTA per game, rarer on 3PT)
                     foul_probability = min(0.2, ball_handler.fta_pg * 0.015)
@@ -2351,7 +2447,11 @@ class InteractiveGame(GameSimulation):
                             # CPU auto-resolves putback (possession will end)
                             if random.random() < 0.35:  # Lower chance for 3PT putbacks
                                 home_boost = self.get_home_court_boost(self.user_team)
-                                made = rebounder.attempt_shot(self.cpu_team.def_rating, home_court_boost=home_boost)
+                                gp = self.game_minutes_elapsed / 48.0
+                                surplus = rebounder.minutes_played - (rebounder.game_target_minutes * gp if gp > 0 else 0)
+                                _fr = 0.010 if rebounder.usage_rate > 25 else 0.015
+                                fatigue = max(0.92 if rebounder.usage_rate > 25 else 0.88, 1.0 - max(0.0, surplus * _fr))
+                                made = rebounder.attempt_shot(self.cpu_team.def_rating, home_court_boost=home_boost, fatigue=fatigue)
                                 if made:
                                     self.user_team.score += 2
                                     plays.append(f"{rebounder.name} gets the board and puts it back!")
@@ -3612,6 +3712,7 @@ def main():
             season_mode_menu(season, game_speed)
 
             # After season ends, ask if they want to play again
+            flush_stdin()
             play_again = Prompt.ask("\n[bold cyan]Return to main menu?[/bold cyan]", choices=["y", "n"], default="y")
             if play_again.lower() != "y":
                 break
@@ -3669,6 +3770,7 @@ def main():
                 console.print("\n[yellow]Game interrupted by user[/yellow]")
 
             # Ask if player wants to play again
+            flush_stdin()
             play_again = Prompt.ask(
                 "\n[bold cyan]Play another game?[/bold cyan]",
                 choices=["y", "n"],
@@ -3720,6 +3822,7 @@ def main():
                 console.print("\n[yellow]Game interrupted by user[/yellow]")
 
             # Ask if player wants to play again
+            flush_stdin()
             play_again = Prompt.ask(
                 "\n[bold cyan]Play another game?[/bold cyan]",
                 choices=["y", "n"],
