@@ -1,0 +1,55 @@
+name: Build Windows EXE (Free Edition)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller
+          pip install rich
+
+      - name: Build EXE
+        run: pyinstaller Basketball-Sim-Free.spec
+
+      - name: Copy data files
+        run: |
+          copy players.csv dist\
+          copy teams_free.csv dist\
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath "dist\Basketball-Sim-Free.exe" -PassThru
+          Start-Sleep -Seconds 5
+          if ($proc.HasExited -and $proc.ExitCode -ne 0) {
+            Write-Error "EXE crashed on startup with exit code $($proc.ExitCode)"
+            exit 1
+          }
+          if (-not $proc.HasExited) {
+            $proc.Kill()
+            Write-Host "Smoke test passed — EXE ran for 5 seconds without crashing"
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Basketball-Sim-Free-Windows
+          path: |
+            dist/Basketball-Sim-Free.exe
+            dist/players.csv
+            dist/teams_free.csv
