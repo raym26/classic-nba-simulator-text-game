@@ -4,7 +4,7 @@ Classic NBA Text Basketball Simulation
 A nostalgic recreation of text-based basketball games
 """
 
-VERSION = "2.3.0"
+VERSION = "2.4.0"
 
 # ══════════════════════════════════════════════════════════════
 # FEATURE FLAG: Toggle between Full and Free Edition
@@ -12,6 +12,11 @@ VERSION = "2.3.0"
 # Set to False for Full Version (includes Season Mode)
 # ══════════════════════════════════════════════════════════════
 FREE_EDITION = True
+
+# ── Rotation constants ────────────────────────────────────────────────────────
+MAX_STINT_MINUTES = 12.0   # Max consecutive minutes before mandatory rest
+MIN_REST_MINUTES  = 3.0    # Minimum rest duration after a stint
+FOUL_TROUBLE_STINT = 8.0   # Reduced stint limit when player has 3+ fouls
 
 import random
 import time
@@ -67,6 +72,146 @@ def get_last_name(full_name: str) -> str:
         return parts[-1]
     return full_name
 
+
+# --- Play-by-play shot flavor -------------------------------------------------
+# The attempt line carries the "move" (crossover, hook shot, finger roll,
+# fadeaway, etc.); the make/miss reactions stay generic so any move pairs
+# cleanly with any outcome. Guards/wings favor perimeter and slashing moves;
+# bigs favor post moves. When there was a pass, catch-and-shoot / cut flavor
+# is mixed in.
+_GUARD_POS = {'PG', 'SG', 'SF'}
+
+
+def describe_two_pt_attempt(name: str, position: str, num_passes: int) -> str:
+    """Return a varied 2PT shot-attempt line (ellipsis-terminated) for the shooter."""
+    slasher = [
+        f"{name} drives to the basket...",
+        f"{name} attacks the rim...",
+        f"{name} slashes into the lane...",
+        f"{name} euro-steps through traffic...",
+        f"{name} with a finger roll...",
+        f"{name} floats up a one-handed runner...",
+        f"{name} pushes off for the floater...",
+    ]
+    perimeter = [
+        f"{name} crosses over, pulls up...",
+        f"{name} steps back for the jumper...",
+        f"{name} rises for the mid-range...",
+        f"{name} shakes his man, pulls up...",
+        f"{name} spins into a fadeaway...",
+    ]
+    post = [
+        f"{name} backs it down, hook shot...",
+        f"{name} turns for the turnaround jumper...",
+        f"{name} drop-steps, hook over the defender...",
+        f"{name} fades away from the block...",
+        f"{name} spins baseline, up and under...",
+    ]
+    catch = [
+        f"{name} catches and finishes at the rim...",
+        f"{name} cuts backdoor, floats it up...",
+        f"{name} takes the feed, finger roll...",
+    ]
+    if position in _GUARD_POS:
+        pool = slasher + perimeter
+    else:
+        pool = post + slasher[:4]
+    if num_passes > 0:
+        pool = pool + catch
+    return random.choice(pool)
+
+
+def describe_three_pt_attempt(name: str, num_passes: int) -> str:
+    """Return a varied 3PT shot-attempt line (ellipsis-terminated)."""
+    catch_and_shoot = [
+        f"{name} spots up from deep...",
+        f"{name} catches and fires from three...",
+        f"{name} sets his feet behind the arc...",
+        f"{name} rises up from downtown...",
+    ]
+    off_dribble = [
+        f"{name} pulls up for three...",
+        f"{name} steps back for three...",
+        f"{name} crosses over, launches from deep...",
+        f"{name} side-steps into a three...",
+        f"{name} rises up from way out...",
+    ]
+    if num_passes > 0:
+        pool = catch_and_shoot + off_dribble[:1]
+    else:
+        pool = off_dribble
+    return random.choice(pool)
+
+
+_WING_POS = {'SG', 'SF'}
+_POST_POS = {'C', 'PF'}
+
+
+def _court_spot(position: str, is_three: bool) -> str:
+    """Fake a court location from position, for pass-combo flavor.
+    Three-point assists always land on a perimeter spot (even for bigs,
+    who'd be popping out to the arc) — a post/block tag would contradict
+    the shot that follows."""
+    if is_three:
+        return random.choice(['on the wing', 'in the corner', 'up top', 'on the perimeter'])
+    if position in _WING_POS:
+        return random.choice(['on the wing', 'in the corner', 'up top'])
+    if position in _POST_POS:
+        return random.choice(['on the block', 'in the post'])
+    return random.choice(['at the top', 'up top', 'on the perimeter'])
+
+
+def describe_assist_pass(first_name: str, last_name: str, shooter_name: str,
+                          shooter_position: str, is_three: bool) -> Optional[str]:
+    """
+    Build the ball-movement line that feeds into a shot attempt, e.g.
+    "Magic drives, no-look pass to Cooper on the wing" for a kick-out three,
+    or "Magic to Worthy, who feeds Cooper" for a two-hop chain.
+    first_name/last_name are the same player on a single-pass possession;
+    they differ when the ball moved through an extra pair of hands first.
+    Returns None if the shooter created the shot unassisted.
+    """
+    same_hop = (first_name == last_name)
+    if same_hop and last_name == shooter_name:
+        return None
+
+    spot = _court_spot(shooter_position, is_three)
+    if is_three:
+        if same_hop:
+            options = [
+                f"{last_name} drives and kicks out to {shooter_name} {spot}",
+                f"{last_name} drives, no-look pass to {shooter_name} {spot}",
+                f"{last_name} swings it to {shooter_name} {spot}",
+                f"{last_name} finds {shooter_name} {spot}",
+                f"{last_name} whips it out to {shooter_name} {spot}",
+            ]
+        elif last_name == shooter_name:
+            options = [f"{first_name} to {shooter_name}"]
+        else:
+            options = [
+                f"{first_name} to {last_name}, who kicks out to {shooter_name} {spot}",
+                f"{first_name} to {last_name}, swings it to {shooter_name} {spot}",
+                f"{first_name} to {last_name}, finds {shooter_name} {spot}",
+            ]
+    else:
+        if same_hop:
+            options = [
+                f"{last_name} finds {shooter_name}",
+                f"{last_name} dishes to {shooter_name}",
+                f"{last_name} feeds {shooter_name}",
+                f"{last_name} no-look pass to {shooter_name}",
+                f"{last_name} threads it to {shooter_name}",
+            ]
+        elif last_name == shooter_name:
+            options = [f"{first_name} to {shooter_name}"]
+        else:
+            options = [
+                f"{first_name} to {last_name}, who feeds {shooter_name}",
+                f"{first_name} to {last_name}, finds {shooter_name}",
+                f"{first_name} to {last_name}, dishes to {shooter_name}",
+            ]
+    return random.choice(options)
+
 @dataclass
 class Player:
     """Represents a basketball player with stats"""
@@ -103,6 +248,8 @@ class Player:
     turnovers: int = 0  # Turnovers (offensive stat)
     minutes_played: float = 0.0  # Minutes played in current game
     game_target_minutes: float = 0.0  # Target minutes for this specific game (sampled from distribution)
+    consecutive_minutes: float = 0.0  # Unbroken minutes in current stint
+    rest_minutes_remaining: float = 0.0  # Mandatory rest countdown
 
     def __hash__(self):
         return hash(self.name)
@@ -200,6 +347,8 @@ class Player:
         self.blocks = 0
         self.turnovers = 0
         self.minutes_played = 0.0
+        self.consecutive_minutes = 0.0
+        self.rest_minutes_remaining = 0.0
 
 
 @dataclass
@@ -396,6 +545,7 @@ class Team:
                     bench_player.position == position):
                     # Make the substitution
                     self.on_court_indices[fouled_out_idx] = bench_idx
+                    bench_player.consecutive_minutes = 0.0  # Fresh stint
                     return bench_player
 
         # If no position match found, just take any available player
@@ -403,6 +553,7 @@ class Team:
             if bench_idx not in self.on_court_indices and bench_player.fouls < 6:
                 # Make the substitution
                 self.on_court_indices[fouled_out_idx] = bench_idx
+                bench_player.consecutive_minutes = 0.0  # Fresh stint
                 return bench_player
 
         # No substitute available - team plays short-handed
@@ -441,10 +592,81 @@ class Team:
         return top_indices
 
     def update_minutes(self, seconds_played: float):
-        """Update minutes played for players on court"""
+        """Update minutes played for players on court; tick rest countdown for bench players"""
         minutes = seconds_played / 60.0
-        for idx in self.on_court_indices:
-            self.players[idx].minutes_played += minutes
+        on_court_set = set(self.on_court_indices)
+        for idx, player in enumerate(self.players):
+            if idx in on_court_set:
+                player.minutes_played += minutes
+                player.consecutive_minutes += minutes
+            elif player.rest_minutes_remaining > 0:
+                player.rest_minutes_remaining = max(0.0, player.rest_minutes_remaining - minutes)
+
+    def check_stint_rotations(self, game_minutes_elapsed: float, my_score: int = 0, opponent_score: int = 0):
+        """Enforce consecutive-stint limits and coach's rule.
+
+        Coach's rule: keep as many top players on court as possible.
+        A star can only be rested if at least 4 of the team's top 5 (by usage)
+        will remain on court. Exception: foul trouble or garbage time.
+        """
+        game_progress = game_minutes_elapsed / 48.0
+        score_diff = my_score - opponent_score
+        is_garbage = abs(score_diff) >= 20 and game_progress >= 0.75
+        is_overtime = game_minutes_elapsed > 48
+
+        # Top-5 by usage_rate — these are the stars the coach's rule protects
+        sorted_by_usage = sorted(range(len(self.players)),
+                                 key=lambda i: self.players[i].usage_rate, reverse=True)
+        top5_indices = set(sorted_by_usage[:5])
+        on_court_set = set(self.on_court_indices)
+        top5_on_court = sum(1 for i in top5_indices if i in on_court_set)
+
+        for lineup_pos, player_idx in enumerate(self.on_court_indices):
+            player = self.players[player_idx]
+            if player.game_target_minutes == 0:
+                continue
+
+            in_foul_trouble = player.fouls >= 3
+            stint_limit = FOUL_TROUBLE_STINT if in_foul_trouble else MAX_STINT_MINUTES
+
+            if player.consecutive_minutes < stint_limit:
+                continue  # Still within stint — nothing to do
+
+            # Player has hit their stint limit. Apply coach's rule:
+            # Don't pull a top-5 player if it would leave fewer than 4 of them on court,
+            # unless they're in foul trouble or it's garbage/OT.
+            is_top5 = player_idx in top5_indices
+            if (is_top5 and not in_foul_trouble and not is_garbage and not is_overtime
+                    and top5_on_court <= 4):
+                continue  # Delay this rest — coach's rule blocks it
+
+            # Find the best available bench player to sub in
+            best_sub_idx = None
+            best_score = -999.0
+            compatible_positions = self.get_position_compatible(player.position)
+            for bench_idx, bench_player in enumerate(self.players):
+                if bench_idx in on_court_set:
+                    continue
+                if bench_player.game_target_minutes == 0:
+                    continue
+                if bench_player.rest_minutes_remaining > 0:
+                    continue  # Still serving mandatory rest
+                if bench_player.minutes_played >= bench_player.game_target_minutes * 0.99:
+                    continue  # Already hit their minutes
+
+                pos_bonus = 2.0 if bench_player.position in compatible_positions else 0.0
+                score = pos_bonus + bench_player.usage_rate
+                if score > best_score:
+                    best_sub_idx = bench_idx
+                    best_score = score
+
+            if best_sub_idx is not None:
+                player.rest_minutes_remaining = MIN_REST_MINUTES
+                player.consecutive_minutes = 0.0
+                self.on_court_indices[lineup_pos] = best_sub_idx
+                on_court_set = set(self.on_court_indices)  # Refresh after change
+                if is_top5:
+                    top5_on_court -= 1
 
     def time_based_substitutions(self, game_minutes_elapsed: float, restrict_to_top: int = None,
                                  my_score: int = 0, opponent_score: int = 0):
@@ -528,11 +750,6 @@ class Team:
                 players_to_sub_out.append((i, player_idx, 999))
                 continue
 
-            # FOUL TROUBLE ENFORCEMENT: Force bench any player with 4+ fouls before Q4
-            if in_foul_trouble:
-                players_to_sub_out.append((i, player_idx, 998))
-                continue
-
             if is_superstar and is_close_game and not in_foul_trouble:
                 # Superstar stays on court in close games (and hasn't hit cap)
                 continue
@@ -540,12 +757,12 @@ class Team:
             # How much of their target minutes should they have played by now?
             expected_minutes = player.game_target_minutes * game_progress
 
-            # Buffer scales with target minutes: high-minute players play longer stints before resting
-            # (Rodman at 32.6 min gets ~2.0 min buffer; bench player at 10 min gets 0.6 min)
+            # Are they ahead of pace? Use smaller buffer early in game (0.5 min) to encourage rotation
+            # Increase buffer later in game to lock in key players (1.5 min in 4th quarter)
             if game_progress < 0.75:  # First 3 quarters
-                buffer = max(0.5, player.game_target_minutes * 0.06)
+                buffer = 0.5
             else:  # 4th quarter - tighter rotation
-                buffer = max(1.5, player.game_target_minutes * 0.06)
+                buffer = 1.5
 
             # Superstars in non-close games still get some buffer before subbing
             if is_superstar and not is_blowout:
@@ -563,14 +780,12 @@ class Team:
         for i in range(max_subs):
             lineup_pos, player_idx, _ = players_to_sub_out[i]
 
-            # Find best substitute: starters get priority over bench players (tier 1 vs tier 2)
+            # Find best substitute: player most behind their minute pace (position-aware)
             player_being_subbed = self.players[player_idx]
             compatible_positions = self.get_position_compatible(player_being_subbed.position)
 
             best_sub_idx = None
             best_deficit = -999
-            best_starter_idx = None
-            best_starter_deficit = -999
 
             # First try: Find position-compatible substitute
             for position in compatible_positions:
@@ -584,9 +799,7 @@ class Team:
                     if bench_player.game_target_minutes == 0:
                         continue
 
-                    # Superstars (elite closers) can play with one extra foul vs regular players
-                    player_foul_limit = foul_sub_in_limit + (1 if bench_player.usage_rate > 25 else 0)
-                    if bench_player.fouls >= player_foul_limit:
+                    if bench_player.fouls >= foul_sub_in_limit:
                         continue
 
                     expected_minutes = bench_player.game_target_minutes * game_progress
@@ -595,27 +808,16 @@ class Team:
                     # Only sub in players who are behind pace (deficit > 0)
                     # and haven't already hit their target
                     if deficit > 0 and bench_player.minutes_played < bench_player.game_target_minutes * 0.99:
-                        if bench_player.starter:
-                            if deficit > best_starter_deficit:
-                                best_starter_idx = bench_idx
-                                best_starter_deficit = deficit
-                        else:
-                            if deficit > best_deficit:
-                                best_sub_idx = bench_idx
-                                best_deficit = deficit
+                        if deficit > best_deficit:
+                            best_sub_idx = bench_idx
+                            best_deficit = deficit
 
-                # Starters always get the call if available; only fall back to bench if no starter needs minutes
-                if best_starter_idx is not None:
-                    best_sub_idx = best_starter_idx
-                    break
+                # If we found a substitute at this position level, use it
                 if best_sub_idx is not None:
                     break
 
             # Second try: If no position match, just take best available
             if best_sub_idx is None:
-                best_starter_idx = None
-                best_starter_deficit = -999
-                best_deficit = -999
                 for bench_idx, bench_player in enumerate(self.players):
                     if bench_idx not in allowed_indices or bench_idx in self.on_court_indices:
                         continue
@@ -623,29 +825,21 @@ class Team:
                     if bench_player.game_target_minutes == 0:
                         continue
 
-                    player_foul_limit = foul_sub_in_limit + (1 if bench_player.usage_rate > 25 else 0)
-                    if bench_player.fouls >= player_foul_limit:
+                    if bench_player.fouls >= foul_sub_in_limit:
                         continue
 
                     expected_minutes = bench_player.game_target_minutes * game_progress
                     deficit = expected_minutes - bench_player.minutes_played
 
                     if deficit > 0 and bench_player.minutes_played < bench_player.game_target_minutes * 0.99:
-                        if bench_player.starter:
-                            if deficit > best_starter_deficit:
-                                best_starter_idx = bench_idx
-                                best_starter_deficit = deficit
-                        else:
-                            if deficit > best_deficit:
-                                best_sub_idx = bench_idx
-                                best_deficit = deficit
-
-                if best_starter_idx is not None:
-                    best_sub_idx = best_starter_idx
+                        if deficit > best_deficit:
+                            best_sub_idx = bench_idx
+                            best_deficit = deficit
 
             # Make the substitution
             if best_sub_idx is not None:
                 self.on_court_indices[lineup_pos] = best_sub_idx
+                self.players[best_sub_idx].consecutive_minutes = 0.0  # Fresh stint
 
     def check_substitutions(self):
         """Emergency substitution check - only subs players who are way over their minutes
@@ -798,7 +992,7 @@ class GameSimulation:
             return (12, 16)
         elif year < 2010:
             # 1990s-2000s: SLOWEST ERA - defensive grind, ISO-heavy (~184 total)
-            return (14, 16)
+            return (14, 18)
         else:
             # 2010s+: Modern pace and space (~200 total possessions)
             return (13, 17)
@@ -967,24 +1161,12 @@ class GameSimulation:
                 turnover_types = ["Bad pass", "Traveling", "Offensive foul", "Lost handle"]
                 error_type = random.choice(turnover_types)
                 plays.append(f"{handler_name} turns it over - {error_type.lower()}")
-                if error_type == "Offensive foul":
-                    ball_handler.fouls += 1
-                    if ball_handler.fouls >= 6:
-                        plays.append(f"[bold red]{handler_name} fouls out![/bold red]")
-                        substitute = self.possession.substitute_fouled_out_player(ball_handler)
-                        if substitute:
-                            plays.append(f"{get_last_name(substitute.name)} checks in")
-                    elif self.is_foul_trouble(ball_handler):
-                        plays.append(f"[yellow]{handler_name} in foul trouble, heads to bench[/yellow]")
-                        substitute = self.possession.substitute_fouled_out_player(ball_handler)
-                        if substitute:
-                            plays.append(f"{get_last_name(substitute.name)} checks in")
 
             return " | ".join(plays), scored
 
         # Check for non-shooting foul (before shot attempt)
-        # 6% chance of non-shooting foul during possession
-        if random.random() < 0.06:
+        # 10% chance of non-shooting foul during possession
+        if random.random() < 0.10:
             offensive_player = self.possession.select_shooter() if current_player is None else current_player
             fouling_player, fouled_out = self.commit_foul(defending_team, offensive_player)
             fouler_name = get_last_name(fouling_player.name)
@@ -1006,8 +1188,8 @@ class GameSimulation:
                 if substitute:
                     plays.append(f"{get_last_name(substitute.name)} checks in")
 
-            # Check bonus situation (4+ team fouls = 2 FTs)
-            if defending_team.team_fouls >= 4:
+            # Check bonus situation (5+ team fouls = 2 FTs)
+            if defending_team.team_fouls >= 5:
                 plays.append(f"Bonus - {off_player_name} at the line")
                 ft_results = []
                 for i in range(2):
@@ -1027,16 +1209,6 @@ class GameSimulation:
         shooter_name = get_last_name(shooter.name)
         def_rating = defending_team.def_rating
 
-        # CRUNCH TIME: star players take over in close Q4/OT situations
-        my_score = self.possession.score
-        opp_score = defending_team.score
-        if abs(my_score - opp_score) <= 5 and self.game_minutes_elapsed >= 42:
-            on_court = [self.possession.players[i] for i in self.possession.on_court_indices]
-            if any(p.usage_rate > 25 for p in on_court):
-                crunch_weights = [p.usage_rate * (2.0 if p.usage_rate > 25 else 1.0) for p in on_court]
-                shooter = random.choices(on_court, weights=crunch_weights)[0]
-                shooter_name = get_last_name(shooter.name)
-
         # FATIGUE: players ahead of their minute target shoot less efficiently
         # Superstars have more endurance — smaller penalty and higher floor
         game_progress = self.game_minutes_elapsed / 48.0
@@ -1052,31 +1224,44 @@ class GameSimulation:
         two_rate = 1.0 - three_rate
         shot_type = random.choices(['two', 'three'], weights=[two_rate, three_rate])[0]
 
-        # Force 2PT if shooter has no three-point game:
-        # - three_pt_pct == 0: explicitly a non-shooter
-        # - three_pa_pg set but below 0.5/game: small-sample artifact (e.g. 1-for-1 career)
-        low_propensity = shooter.three_pa_pg > 0 and shooter.three_pa_pg < 0.5
-        if shot_type == 'three' and (shooter.three_pt_pct == 0 or low_propensity):
+        # Force 2PT if shooter can't shoot 3s (prevents Wilt, Duncan, Kareem from bricking 3s)
+        if shot_type == 'three' and shooter.three_pt_pct == 0:
             shot_type = 'two'
+
+        # URGENCY OVERRIDE: final 10 seconds of Q4/OT
+        _urgent_drive = False
+        _last_period = (self.quarter == 4 or (isinstance(self.quarter, str) and 'OT' in self.quarter))
+        if _last_period and self.time_remaining <= 10:
+            _def_team = self.team2 if self.possession == self.team1 else self.team1
+            _score_diff = self.possession.score - _def_team.score
+            if _score_diff == -3:
+                # Down 3: must shoot a 3
+                shot_type = 'three'
+                if shooter.three_pt_pct == 0:
+                    _three_shooters = [p for p in self.possession.get_on_court() if p.three_pt_pct > 0]
+                    if _three_shooters:
+                        shooter = max(_three_shooters, key=lambda p: p.three_pt_pct)
+                        shooter_name = get_last_name(shooter.name)
+            elif _score_diff == -2:
+                # Down 2: drive hard and get fouled for 2 FTs to tie
+                shot_type = 'two'
+                _urgent_drive = True
 
         if shot_type == 'three':
             # Build play description with passes (max 1-2)
             if num_passes >= 2 and first_passer and last_passer:
                 fp = get_last_name(first_passer.name)
                 lp = get_last_name(last_passer.name)
-                if fp == lp:
-                    if lp != shooter_name:
-                        plays.append(f"{lp} finds {shooter_name}")
-                elif lp == shooter_name:
-                    plays.append(f"{fp} to {shooter_name}")
-                else:
-                    plays.append(f"{fp} to {lp} to {shooter_name}")
+                pass_line = describe_assist_pass(fp, lp, shooter_name, shooter.position, is_three=True)
+                if pass_line:
+                    plays.append(pass_line)
             elif num_passes == 1 and last_passer:
                 lp = get_last_name(last_passer.name)
-                if lp != shooter_name:
-                    plays.append(f"{lp} finds {shooter_name}")
+                pass_line = describe_assist_pass(lp, lp, shooter_name, shooter.position, is_three=True)
+                if pass_line:
+                    plays.append(pass_line)
 
-            plays.append(f"{shooter_name} pulls up for three...")
+            plays.append(describe_three_pt_attempt(shooter_name, num_passes))
 
             # Check for block (rare on 3PT shots, ~2%)
             blocked = random.random() < 0.02
@@ -1167,26 +1352,17 @@ class GameSimulation:
             if num_passes >= 2 and first_passer and last_passer:
                 fp = get_last_name(first_passer.name)
                 lp = get_last_name(last_passer.name)
-                if fp == lp:
-                    if lp != shooter_name:
-                        plays.append(f"{lp} finds {shooter_name}")
-                elif lp == shooter_name:
-                    plays.append(f"{fp} to {shooter_name}")
-                else:
-                    plays.append(f"{fp} to {lp} to {shooter_name}")
+                pass_line = describe_assist_pass(fp, lp, shooter_name, shooter.position, is_three=False)
+                if pass_line:
+                    plays.append(pass_line)
             elif num_passes == 1 and last_passer:
                 lp = get_last_name(last_passer.name)
-                if lp != shooter_name:
-                    plays.append(f"{lp} finds {shooter_name}")
+                pass_line = describe_assist_pass(lp, lp, shooter_name, shooter.position, is_three=False)
+                if pass_line:
+                    plays.append(pass_line)
 
-            # Varied shot attempt descriptions
-            shot_attempts = [
-                f"{shooter_name} drives to the basket...",
-                f"{shooter_name} pulls up...",
-                f"{shooter_name} in the paint...",
-                f"{shooter_name} attacks the rim..."
-            ]
-            plays.append(random.choice(shot_attempts))
+            # Varied, position-aware shot attempt descriptions (move lives here)
+            plays.append(describe_two_pt_attempt(shooter_name, shooter.position, num_passes))
 
             # Check for block (more common on 2PT shots, ~5%)
             blocked = random.random() < 0.05
@@ -1202,23 +1378,24 @@ class GameSimulation:
                 home_boost = self.get_home_court_boost(self.possession)
                 made = shooter.attempt_shot(def_rating, passer=last_passer if num_passes > 0 else None, home_court_boost=home_boost, fatigue=fatigue)
 
-                # Check for foul (weighted by FTA per game)
-                foul_probability = min(0.3, shooter.fta_pg * 0.02)
+                # Check for foul — urgent drive overrides normal probability
+                foul_probability = 0.50 if _urgent_drive else min(0.3, shooter.fta_pg * 0.02)
                 fouled = random.random() < foul_probability
 
             if made:
                 self.possession.score += 2
                 scored = True
 
-                # Varied 2PT make descriptions
+                # Varied 2PT make reactions (the move itself is in the attempt line,
+                # so these stay generic to avoid clashing with hook/fadeaway/etc.)
                 two_pt_makes = [
                     "Scores!",
                     "Got it!",
-                    "Lays it in!",
-                    "Slams it home!",
-                    "Banks it in!",
-                    "Floater drops!",
-                    "Fadeaway good!"
+                    "Count it!",
+                    "And it drops!",
+                    "Buckets!",
+                    "Right through the net!",
+                    "Good!"
                 ]
                 plays.append(random.choice(two_pt_makes))
 
@@ -1311,8 +1488,8 @@ class GameSimulation:
         time_text = f"Q{self.quarter}  {mins}:{secs:02d}"
 
         # Team fouls (highlight if in bonus)
-        team1_fouls = f"[bold red]{self.team1.team_fouls}[/bold red]" if self.team1.team_fouls >= 4 else str(self.team1.team_fouls)
-        team2_fouls = f"[bold red]{self.team2.team_fouls}[/bold red]" if self.team2.team_fouls >= 4 else str(self.team2.team_fouls)
+        team1_fouls = f"[bold red]{self.team1.team_fouls}[/bold red]" if self.team1.team_fouls >= 5 else str(self.team1.team_fouls)
+        team2_fouls = f"[bold red]{self.team2.team_fouls}[/bold red]" if self.team2.team_fouls >= 5 else str(self.team2.team_fouls)
         foul_text = f"Fouls: {team1_fouls} - {team2_fouls}"
 
         header_table = Table.grid(expand=True)
@@ -1335,7 +1512,12 @@ class GameSimulation:
 
         for player in self.team1.get_on_court():
             # Highlight players in foul trouble (5 fouls)
-            foul_str = f"[bold red]{player.fouls}[/bold red]" if player.fouls >= 5 else str(player.fouls)
+            if player.fouls >= 5:
+                foul_str = f"[bold red]{player.fouls}[/bold red]"
+            elif player.fouls >= 3:
+                foul_str = f"[yellow]{player.fouls}[/yellow]"
+            else:
+                foul_str = str(player.fouls)
             court_table.add_row(
                 self.team1.name[:12],
                 player.name,
@@ -1353,7 +1535,12 @@ class GameSimulation:
 
         for player in self.team2.get_on_court():
             # Highlight players in foul trouble (5 fouls)
-            foul_str = f"[bold red]{player.fouls}[/bold red]" if player.fouls >= 5 else str(player.fouls)
+            if player.fouls >= 5:
+                foul_str = f"[bold red]{player.fouls}[/bold red]"
+            elif player.fouls >= 3:
+                foul_str = f"[yellow]{player.fouls}[/yellow]"
+            else:
+                foul_str = str(player.fouls)
             court_table.add_row(
                 self.team2.name[:12],
                 player.name,
@@ -1447,18 +1634,26 @@ class GameSimulation:
                 if self.time_remaining <= 360 and 360 not in sub_windows_hit:
                     sub_windows_hit.add(360)
                     if self.team1 != self.manual_control_team:
+                        self.team1.check_stint_rotations(self.game_minutes_elapsed,
+                                                        my_score=self.team1.score, opponent_score=self.team2.score)
                         self.team1.time_based_substitutions(self.game_minutes_elapsed,
                                                            my_score=self.team1.score, opponent_score=self.team2.score)
                     if self.team2 != self.manual_control_team:
+                        self.team2.check_stint_rotations(self.game_minutes_elapsed,
+                                                        my_score=self.team2.score, opponent_score=self.team1.score)
                         self.team2.time_based_substitutions(self.game_minutes_elapsed,
                                                            my_score=self.team2.score, opponent_score=self.team1.score)
 
                 if self.time_remaining <= 180 and 180 not in sub_windows_hit:
                     sub_windows_hit.add(180)
                     if self.team1 != self.manual_control_team:
+                        self.team1.check_stint_rotations(self.game_minutes_elapsed,
+                                                        my_score=self.team1.score, opponent_score=self.team2.score)
                         self.team1.time_based_substitutions(self.game_minutes_elapsed,
                                                            my_score=self.team1.score, opponent_score=self.team2.score)
                     if self.team2 != self.manual_control_team:
+                        self.team2.check_stint_rotations(self.game_minutes_elapsed,
+                                                        my_score=self.team2.score, opponent_score=self.team1.score)
                         self.team2.time_based_substitutions(self.game_minutes_elapsed,
                                                            my_score=self.team2.score, opponent_score=self.team1.score)
 
@@ -1537,9 +1732,13 @@ class GameSimulation:
                         # 6:00 mark - first substitution wave
                         sub_windows_hit.add(360)
                         if self.team1 != self.manual_control_team:
+                            self.team1.check_stint_rotations(self.game_minutes_elapsed,
+                                                            my_score=self.team1.score, opponent_score=self.team2.score)
                             self.team1.time_based_substitutions(self.game_minutes_elapsed,
                                                                my_score=self.team1.score, opponent_score=self.team2.score)
                         if self.team2 != self.manual_control_team:
+                            self.team2.check_stint_rotations(self.game_minutes_elapsed,
+                                                            my_score=self.team2.score, opponent_score=self.team1.score)
                             self.team2.time_based_substitutions(self.game_minutes_elapsed,
                                                                my_score=self.team2.score, opponent_score=self.team1.score)
 
@@ -1547,9 +1746,13 @@ class GameSimulation:
                         # 3:00 mark - second substitution wave
                         sub_windows_hit.add(180)
                         if self.team1 != self.manual_control_team:
+                            self.team1.check_stint_rotations(self.game_minutes_elapsed,
+                                                            my_score=self.team1.score, opponent_score=self.team2.score)
                             self.team1.time_based_substitutions(self.game_minutes_elapsed,
                                                                my_score=self.team1.score, opponent_score=self.team2.score)
                         if self.team2 != self.manual_control_team:
+                            self.team2.check_stint_rotations(self.game_minutes_elapsed,
+                                                            my_score=self.team2.score, opponent_score=self.team1.score)
                             self.team2.time_based_substitutions(self.game_minutes_elapsed,
                                                                my_score=self.team2.score, opponent_score=self.team1.score)
 
@@ -1931,8 +2134,8 @@ class InteractiveGame(GameSimulation):
         secs = self.time_remaining % 60
         time_text = f"Q{self.quarter}  {mins}:{secs:02d}"
 
-        team1_fouls = f"[bold red]{self.team1.team_fouls}[/bold red]" if self.team1.team_fouls >= 4 else str(self.team1.team_fouls)
-        team2_fouls = f"[bold red]{self.team2.team_fouls}[/bold red]" if self.team2.team_fouls >= 4 else str(self.team2.team_fouls)
+        team1_fouls = f"[bold red]{self.team1.team_fouls}[/bold red]" if self.team1.team_fouls >= 5 else str(self.team1.team_fouls)
+        team2_fouls = f"[bold red]{self.team2.team_fouls}[/bold red]" if self.team2.team_fouls >= 5 else str(self.team2.team_fouls)
         foul_text = f"Fouls: {team1_fouls} - {team2_fouls}"
 
         shot_clock_text = ""
@@ -1962,7 +2165,12 @@ class InteractiveGame(GameSimulation):
         # User team players (with numbers 1-5)
         for idx, player_idx in enumerate(self.team1.on_court_indices, 1):
             player = self.team1.players[player_idx]
-            foul_str = f"[bold red]{player.fouls}[/bold red]" if player.fouls >= 5 else str(player.fouls)
+            if player.fouls >= 5:
+                foul_str = f"[bold red]{player.fouls}[/bold red]"
+            elif player.fouls >= 3:
+                foul_str = f"[yellow]{player.fouls}[/yellow]"
+            else:
+                foul_str = str(player.fouls)
 
             # Mark ball handler
             player_name = player.name
@@ -1988,7 +2196,12 @@ class InteractiveGame(GameSimulation):
 
         # CPU team players (no numbers)
         for player in self.team2.get_on_court():
-            foul_str = f"[bold red]{player.fouls}[/bold red]" if player.fouls >= 5 else str(player.fouls)
+            if player.fouls >= 5:
+                foul_str = f"[bold red]{player.fouls}[/bold red]"
+            elif player.fouls >= 3:
+                foul_str = f"[yellow]{player.fouls}[/yellow]"
+            else:
+                foul_str = str(player.fouls)
             court_table.add_row(
                 self.team2.name[:12],
                 "",
@@ -2228,7 +2441,7 @@ class InteractiveGame(GameSimulation):
 
             elif action_type == 'S':
                 # Shoot 2-pointer
-                plays.append(f"{ball_handler.name} shoots...")
+                plays.append(describe_two_pt_attempt(ball_handler.name, ball_handler.position, 1 if last_passer else 0))
                 self.shot_clock = 0
 
                 # Check for block
@@ -2352,7 +2565,7 @@ class InteractiveGame(GameSimulation):
 
             elif action_type == 'T':
                 # Shoot 3-pointer
-                plays.append(f"{ball_handler.name} shoots a three-pointer...")
+                plays.append(describe_three_pt_attempt(ball_handler.name, 1 if last_passer else 0))
                 self.shot_clock = 0
 
                 # Check for block (rare on 3PT)
@@ -2539,10 +2752,14 @@ class InteractiveGame(GameSimulation):
                 # NORMAL TIME - Regular substitution windows for CPU
                 if self.time_remaining <= 360 and 360 not in sub_windows_hit:
                     sub_windows_hit.add(360)
+                    self.cpu_team.check_stint_rotations(self.game_minutes_elapsed,
+                                                       my_score=self.cpu_team.score, opponent_score=self.user_team.score)
                     self.cpu_team.time_based_substitutions(self.game_minutes_elapsed)
 
                 if self.time_remaining <= 180 and 180 not in sub_windows_hit:
                     sub_windows_hit.add(180)
+                    self.cpu_team.check_stint_rotations(self.game_minutes_elapsed,
+                                                       my_score=self.cpu_team.score, opponent_score=self.user_team.score)
                     self.cpu_team.time_based_substitutions(self.game_minutes_elapsed)
             # Determine possession time
             min_time, max_time = self.get_era_possession_time(self.possession.year)
@@ -2924,45 +3141,51 @@ class Season:
         """
         Generate balanced round-robin schedule using circle method.
 
-        For 24 teams:
-        - 23 rounds (each team plays 23 games)
-        - 12 games per round (each team plays exactly once per round)
-        - No team appears twice in same round
+        Works for both even and odd team counts. For odd counts a ghost team
+        (__BYE__) is added to make the count even; any game involving __BYE__
+        is dropped from the final schedule (those teams have a bye that round).
+
+        For N teams (even):  N-1 rounds, N/2 games per round
+        For N teams (odd):   N rounds,   (N-1)/2 games per round (one bye/round)
 
         Returns list of (home_team_id, away_team_id) tuples
         """
         team_ids = list(self.teams.keys())
         num_teams = len(team_ids)
 
+        BYE = "__BYE__"
+        if num_teams % 2 == 1:
+            team_ids = team_ids + [BYE]
+
+        n = len(team_ids)  # always even
+
         # Circle method: Fix one team, rotate the rest
         fixed = team_ids[0]
-        rotating = team_ids[1:]  # 23 teams for 24-team league
+        rotating = team_ids[1:]
 
         schedule = []
 
-        for round_num in range(num_teams - 1):  # 23 rounds
+        for round_num in range(n - 1):
             round_games = []
 
-            # Game 1: Fixed team vs first in rotating list
+            # Fixed team vs first in rotating list
             opponent = rotating[0]
             if round_num % 2 == 0:
                 round_games.append((fixed, opponent))
             else:
                 round_games.append((opponent, fixed))
 
-            # Games 2-12: Pair rotating teams from opposite ends
-            # rotating[1] vs rotating[-1], rotating[2] vs rotating[-2], etc.
+            # Pair rotating teams from opposite ends
             for i in range(1, len(rotating) // 2 + 1):
                 team_a = rotating[i]
                 team_b = rotating[-i]
-
-                # Alternate home/away each round
                 if round_num % 2 == 0:
                     round_games.append((team_a, team_b))
                 else:
                     round_games.append((team_b, team_a))
 
-            schedule.extend(round_games)
+            # Drop bye games before adding to schedule
+            schedule.extend((h, a) for h, a in round_games if h != BYE and a != BYE)
 
             # Rotate: move last element to first position
             rotating = [rotating[-1]] + rotating[:-1]
@@ -2972,18 +3195,6 @@ class Season:
         if invalid:
             console.print(f"[red]ERROR: Schedule has teams playing themselves![/red]")
             return self._simple_round_robin()
-
-        # Validate: each team appears exactly once per round
-        games_per_round = num_teams // 2
-        for round_idx in range(num_teams - 1):
-            round_start = round_idx * games_per_round
-            round_games = schedule[round_start:round_start + games_per_round]
-            teams_in_round = []
-            for home, away in round_games:
-                teams_in_round.extend([home, away])
-            if len(teams_in_round) != len(set(teams_in_round)):
-                console.print(f"[red]ERROR: Round {round_idx + 1} has duplicate teams![/red]")
-                return self._simple_round_robin()
 
         return schedule
 
@@ -3208,9 +3419,9 @@ def play_season_game_day(season: Season, game_speed: float = 0.6):
 
             # Ask for game speed
             console.print("[bold cyan]Game Speed:[/bold cyan]")
-            console.print("  1. Cinema (3.5s)  2. Slow (1.2s)  3. Normal (0.6s)  4. Fast (0.3s)  5. Simulate (0.05s)")
+            console.print("  1. Cinema (4.0s)  2. Slow (1.2s)  3. Normal (0.6s)  4. Fast (0.3s)  5. Simulate (0.05s)")
             speed_choice = Prompt.ask("Select speed", choices=["1", "2", "3", "4", "5"], default=str(int(game_speed * 2) if game_speed == 0.6 else "5"))
-            speed_map = {"1": 3.5, "2": 1.2, "3": 0.6, "4": 0.3, "5": 0.05}
+            speed_map = {"1": 4.0, "2": 1.2, "3": 0.6, "4": 0.3, "5": 0.05}
             selected_speed = speed_map[speed_choice]
 
             team1.reset_for_new_game()
@@ -3696,20 +3907,8 @@ def main():
             console.print(f"Games: {len(season.schedule)}")
             console.print(f"Your Team: [bold]{season.teams[user_team_id].name}[/bold]\n")
 
-            # Ask for game speed
-            console.print("\n[bold cyan]Game Speed (for your team's games):[/bold cyan]")
-            console.print("  1. Cinema (3.5s)")
-            console.print("  2. Slow (1.2s)")
-            console.print("  3. Normal (0.6s)")
-            console.print("  4. Fast (0.3s)")
-            console.print("  5. Simulate (0.05s)\n")
-
-            speed_choice = Prompt.ask("Select speed", choices=["1", "2", "3", "4", "5"], default="3")
-            speed_map = {"1": 3.5, "2": 1.2, "3": 0.6, "4": 0.3, "5": 0.05}
-            game_speed = speed_map[speed_choice]
-
-            # Enter season mode menu
-            season_mode_menu(season, game_speed)
+            # Enter season mode menu (speed chosen per game inside play_season_game_day)
+            season_mode_menu(season, game_speed=0.6)
 
             # After season ends, ask if they want to play again
             flush_stdin()
@@ -3737,7 +3936,7 @@ def main():
 
             # Ask for game speed
             console.print("\n[bold cyan]Game Speed:[/bold cyan]")
-            console.print("  1. Cinema (3.5s) - Watch every play unfold")
+            console.print("  1. Cinema (4.0s) - Watch every play unfold")
             console.print("  2. Slow (1.2s) - Comfortable viewing")
             console.print("  3. Normal (0.6s) - Balanced")
             console.print("  4. Fast (0.3s) - Quick game")
@@ -3748,7 +3947,7 @@ def main():
                 choices=["1", "2", "3", "4", "5"],
                 default="3"
             )
-            speed_map = {"1": 3.5, "2": 1.2, "3": 0.6, "4": 0.3, "5": 0.05}
+            speed_map = {"1": 4.0, "2": 1.2, "3": 0.6, "4": 0.3, "5": 0.05}
             game_speed = speed_map[speed_choice]
 
             console.print("\n[green]Starting game...[/green]\n")
@@ -3793,7 +3992,7 @@ def main():
 
             # Ask for game speed
             console.print("\n[bold cyan]Game Speed:[/bold cyan]")
-            console.print("  1. Cinema (3.5s) - Watch every play unfold")
+            console.print("  1. Cinema (4.0s) - Watch every play unfold")
             console.print("  2. Slow (1.2s) - Comfortable viewing")
             console.print("  3. Normal (0.6s) - Balanced")
             console.print("  4. Fast (0.3s) - Quick game")
@@ -3804,7 +4003,7 @@ def main():
                 choices=["1", "2", "3", "4", "5"],
                 default="3"
             )
-            speed_map = {"1": 3.5, "2": 1.2, "3": 0.6, "4": 0.3, "5": 0.05}
+            speed_map = {"1": 4.0, "2": 1.2, "3": 0.6, "4": 0.3, "5": 0.05}
             game_speed = speed_map[speed_choice]
 
             console.print("\n[green]Starting game...[/green]\n")
