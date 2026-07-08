@@ -229,6 +229,7 @@ class Player:
     usage_rate: float = 20.0  # Usage rate - % of team possessions used when player is on floor
     starter: int = 0  # 1 = starter, 0 = bench
     three_pa_pg: float = 0.0  # Three-point attempts per game (0 = not configured, use legacy three_pt_pct==0 check)
+    blk_pg: float = 0.3  # Blocks per game (drives block probability and blocker selection on defense)
 
     # Game stats (will be updated during simulation)
     points: int = 0
@@ -941,6 +942,24 @@ class Team:
         weights = [p.rpg + 1 for p in on_court]
         return random.choices(on_court, weights=weights)[0]
 
+    def avg_blk_pg_on_court(self) -> float:
+        """Average blk_pg among the 5 players currently on the floor.
+        Used to scale block probability to the defense's actual rim protection."""
+        on_court = self.get_on_court()
+        if not on_court:
+            return 0.5
+        return sum(p.blk_pg for p in on_court) / len(on_court)
+
+    def select_blocker(self) -> Player:
+        """Select which on-court defender records the block, weighted by blk_pg
+        so real shot-blockers (not a uniform random teammate) get credit."""
+        on_court = self.get_on_court()
+        if not on_court:
+            return self.players[0]
+
+        weights = [max(0.05, p.blk_pg) for p in on_court]
+        return random.choices(on_court, weights=weights)[0]
+
     def get_random_on_court_player(self) -> Player:
         """
         Safely get a random player from on-court players
@@ -1263,10 +1282,12 @@ class GameSimulation:
 
             plays.append(describe_three_pt_attempt(shooter_name, num_passes))
 
-            # Check for block (rare on 3PT shots, ~2%)
-            blocked = random.random() < 0.02
+            # Check for block (rare on 3PT shots, ~2% base, scaled by the
+            # defense's actual rim-protection level)
+            blk_multiplier = max(0.4, min(2.0, defending_team.avg_blk_pg_on_court() / 0.6))
+            blocked = random.random() < (0.02 * blk_multiplier)
             if blocked:
-                blocker = defending_team.get_random_on_court_player()
+                blocker = defending_team.select_blocker()
                 blocker.blocks += 1
                 shooter.fga += 1  # FGA counts even if blocked
                 plays.append(f"BLOCKED by {get_last_name(blocker.name)}!")
@@ -1364,10 +1385,12 @@ class GameSimulation:
             # Varied, position-aware shot attempt descriptions (move lives here)
             plays.append(describe_two_pt_attempt(shooter_name, shooter.position, num_passes))
 
-            # Check for block (more common on 2PT shots, ~5%)
-            blocked = random.random() < 0.05
+            # Check for block (more common on 2PT shots, ~5% base, scaled by
+            # the defense's actual rim-protection level)
+            blk_multiplier = max(0.4, min(2.0, defending_team.avg_blk_pg_on_court() / 0.6))
+            blocked = random.random() < (0.05 * blk_multiplier)
             if blocked:
-                blocker = defending_team.get_random_on_court_player()
+                blocker = defending_team.select_blocker()
                 blocker.blocks += 1
                 shooter.fga += 1  # FGA counts even if blocked
                 plays.append(f"BLOCKED by {get_last_name(blocker.name)}!")
@@ -2065,7 +2088,8 @@ def load_teams_from_csv() -> Dict[str, Dict]:
                     fta_pg=float(row['fta_pg']),
                     usage_rate=float(row['usage_rate']),
                     starter=int(row.get('starter', 0)),
-                    three_pa_pg=float(row.get('three_pa_pg', 0.0))
+                    three_pa_pg=float(row.get('three_pa_pg', 0.0)),
+                    blk_pg=float(row.get('blk_pg', 0.3))
                 )
                 teams_data[team_id]['players'].append(player)
     
@@ -2444,9 +2468,10 @@ class InteractiveGame(GameSimulation):
                 plays.append(describe_two_pt_attempt(ball_handler.name, ball_handler.position, 1 if last_passer else 0))
                 self.shot_clock = 0
 
-                # Check for block
-                if random.random() < 0.05:
-                    blocker = self.cpu_team.get_random_on_court_player()
+                # Check for block (scaled by the defense's actual rim-protection level)
+                blk_multiplier = max(0.4, min(2.0, self.cpu_team.avg_blk_pg_on_court() / 0.6))
+                if random.random() < (0.05 * blk_multiplier):
+                    blocker = self.cpu_team.select_blocker()
                     blocker.blocks += 1
                     ball_handler.fga += 1
                     plays.append(f"BLOCKED by {blocker.name}!")
@@ -2568,9 +2593,10 @@ class InteractiveGame(GameSimulation):
                 plays.append(describe_three_pt_attempt(ball_handler.name, 1 if last_passer else 0))
                 self.shot_clock = 0
 
-                # Check for block (rare on 3PT)
-                if random.random() < 0.02:
-                    blocker = self.cpu_team.get_random_on_court_player()
+                # Check for block (rare on 3PT, scaled by the defense's actual rim-protection level)
+                blk_multiplier = max(0.4, min(2.0, self.cpu_team.avg_blk_pg_on_court() / 0.6))
+                if random.random() < (0.02 * blk_multiplier):
+                    blocker = self.cpu_team.select_blocker()
                     blocker.blocks += 1
                     ball_handler.fga += 1
                     plays.append(f"BLOCKED by {blocker.name}!")
