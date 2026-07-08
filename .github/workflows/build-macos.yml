@@ -1,0 +1,62 @@
+name: Build macOS Binary (Free Edition)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller
+          pip install rich
+
+      - name: Build binary
+        run: pyinstaller Basketball-Sim-Free.spec
+
+      - name: Copy data files
+        run: |
+          cp players.csv dist/
+          cp teams_free.csv dist/
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          chmod +x dist/Basketball-Sim-Free
+          cd dist
+          # Give it a stdin that stays open (no data, no EOF) for the test
+          # duration — a plain background run inherits closed stdin here,
+          # which makes Rich's Prompt.ask() hit EOFError immediately.
+          ./Basketball-Sim-Free < <(sleep 30) &
+          PID=$!
+          sleep 5
+          if kill -0 $PID 2>/dev/null; then
+            kill $PID
+            echo "Smoke test passed — binary ran for 5 seconds without crashing"
+          else
+            wait $PID
+            EXIT_CODE=$?
+            echo "Binary crashed on startup with exit code $EXIT_CODE"
+            exit 1
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Basketball-Sim-Free-macOS
+          path: |
+            dist/Basketball-Sim-Free
+            dist/players.csv
+            dist/teams_free.csv
