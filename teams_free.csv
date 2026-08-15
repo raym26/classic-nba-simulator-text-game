@@ -1,27 +1,27 @@
-team_id,team_name,year,display_name,pace_rating,three_pt_rate,def_rating
-celtics_64,Boston,1965,1965 Boston (Russell Dynasty),1.2,0.0,0.91
-knicks_69,New York,1970,1970 New York (Clyde & Captain),1.15,0.0,0.88
-bucks_70,Milwaukee,1971,1971 Milwaukee (First Championship),1.18,0.0,0.88
-lakers_71,Los Angeles,1972,1972 Los Angeles (33-Game Streak),1.16,0.0,0.90
-sixers_82,Philadelphia,1983,1983 Philadelphia (Fo-Fo-Fo),1.08,0.05,0.9
-bucks_20,Milwaukee,2021,2021 Milwaukee (The Greek Freak),1.00,0.40,0.95
-celtics_85,Boston,1986,1986 Boston (The Last Banner),1.05,0.1,0.9
-lakers_86,Los Angeles,1987,1987 Los Angeles (Showtime),1.08,0.12,0.94
-pistons_88,Detroit,1989,1989 Detroit (Bad Boys),0.98,0.08,0.91
-bulls_92,Chicago,1993,1993 Chicago (First Three-Peat),0.94,0.16,0.92
-rockets_93,Houston,1994,1994 Houston (Dream Season),0.96,0.22,0.89
-bulls_95,Chicago,1996,1996 Chicago (72-10 Team),0.92,0.18,0.90
-jazz_97,Utah,1998,1998 Utah (Pick & Roll Dynasty),0.94,0.18,0.93
-lakers_99,Los Angeles,2000,2000 Los Angeles (Showtime II),0.9,0.2,0.92
-lakers_08,Los Angeles,2009,2009 Los Angeles (The Return),0.94,0.22,0.9
-mavs_10,Dallas,2011,2011 Dallas (The Upset),0.96,0.23,0.94
-heat_12,Miami,2013,2013 Miami (Big Three),0.98,0.28,0.93
-spurs_13,San Antonio,2014,2014 San Antonio (Beautiful Game),0.96,0.26,0.94
-cavs_15,Cleveland,2016,2016 Cleveland (The Block & Shot),0.99,0.31,0.96
-warriors_16,Golden State,2017,2017 Golden State (Super Team),1.15,0.35,0.93
-nuggets_22,Denver,2023,2023 Denver (MVP Era),1.02,0.38,0.98
-celtics_23,Boston,2024,2024 Boston (Banner 18),1.04,0.44,0.96
-thunder_24,Oklahoma City,2024,2024 Oklahoma City (Best in West),1.04,0.39,0.95
-celtics_07,Boston,2008,2008 Boston (The Big Three),0.92,0.24,0.90
-knicks_25,New York,2026,2026 New York (First Title Since '73),0.98,0.43,0.93
-spurs_25,San Antonio,2026,2026 San Antonio (The Wemby Era),1.03,0.42,0.92
+team_id,team_name,year,display_name,pace_rating,three_pt_rate,def_rating_interior,def_rating_perimeter,clutch_pedigree
+celtics_64,Boston,1965,1965 Boston (Russell Dynasty),1.2,0.0,0.84,0.97,1.0
+knicks_69,New York,1970,1970 New York (Clyde & Captain),1.15,0.0,0.85,0.87,1.0
+bucks_70,Milwaukee,1971,1971 Milwaukee (First Championship),1.18,0.0,0.82,0.94,1.0
+lakers_71,Los Angeles,1972,1972 Los Angeles (33-Game Streak),1.16,0.0,0.83,0.93,1.0
+sixers_82,Philadelphia,1983,1983 Philadelphia (Fo-Fo-Fo),1.08,0.05,0.86,0.89,1.0
+bucks_20,Milwaukee,2021,2021 Milwaukee (The Greek Freak),1.00,0.40,0.9,0.89,1.0
+celtics_85,Boston,1986,1986 Boston (The Last Banner),1.05,0.1,0.86,0.88,1.0
+lakers_86,Los Angeles,1987,1987 Los Angeles (Showtime),1.08,0.12,0.97,0.9,1.0
+pistons_88,Detroit,1989,1989 Detroit (Bad Boys),0.98,0.08,0.86,0.87,1.0
+bulls_92,Chicago,1993,1993 Chicago (First Three-Peat),0.94,0.16,0.93,0.86,1.0
+rockets_93,Houston,1994,1994 Houston (Dream Season),0.96,0.22,0.81,0.95,1.0
+bulls_95,Chicago,1996,1996 Chicago (72-10 Team),0.92,0.18,0.9,0.85,1.0
+jazz_97,Utah,1998,1998 Utah (Pick & Roll Dynasty),0.94,0.18,0.91,0.95,1.0
+lakers_99,Los Angeles,2000,2000 Los Angeles (Showtime II),0.9,0.2,0.87,0.89,1.0
+lakers_08,Los Angeles,2009,2009 Los Angeles (The Return),0.94,0.22,0.91,0.87,1.0
+mavs_10,Dallas,2011,2011 Dallas (The Upset),0.96,0.23,0.85,0.92,1.0
+heat_12,Miami,2013,2013 Miami (Big Three),0.98,0.28,0.97,0.86,1.0
+spurs_13,San Antonio,2014,2014 San Antonio (Beautiful Game),0.96,0.26,0.88,0.89,1.0
+cavs_15,Cleveland,2016,2016 Cleveland (The Block & Shot),0.99,0.31,0.92,0.93,1.0
+warriors_16,Golden State,2017,2017 Golden State (Super Team),1.15,0.35,0.87,0.85,1.0
+nuggets_22,Denver,2023,2023 Denver (MVP Era),1.02,0.38,0.97,0.99,1.0
+celtics_23,Boston,2024,2024 Boston (Banner 18),1.04,0.44,0.93,0.9,1.0
+thunder_24,Oklahoma City,2024,2024 Oklahoma City (Best in West),1.04,0.39,0.9,0.91,1.0
+celtics_07,Boston,2008,2008 Boston (The Big Three),0.92,0.24,0.83,0.92,1.0
+knicks_25,New York,2026,2026 New York (First Title Since '73),0.98,0.43,0.96,0.85,1.0
+spurs_25,San Antonio,2026,2026 San Antonio (The Wemby Era),1.03,0.42,0.9,0.96,0.90

@@ -22,7 +22,9 @@ import random
 import time
 import csv
 import sys
+import os
 import platform
+from datetime import date
 if platform.system() != 'Windows':
     import tty
     import termios
@@ -62,13 +64,18 @@ def flush_stdin():
     else:
         termios.tcflush(sys.stdin, termios.TCIFLUSH)
 
+_NAME_SUFFIXES = {"Jr.", "Jr", "Sr.", "Sr", "II", "III", "IV"}
+
+
 def get_last_name(full_name: str) -> str:
     """Extract last name from full name for shorter play-by-play text"""
     parts = full_name.split()
     if len(parts) >= 2:
-        # Handle special cases like "A.C. Green" or "K.C. Jones"
-        if parts[0].endswith('.') and len(parts[0]) <= 3:
-            return parts[-1]  # Return just the last name
+        # "Michael Porter Jr." -> last token is just "Jr." on its own, which
+        # reads wrong in play-by-play ("Jr. drains it!") — fold it onto the
+        # actual last name instead: "Porter-Jr"
+        if parts[-1] in _NAME_SUFFIXES and len(parts) >= 3:
+            return f"{parts[-2]}-{parts[-1].rstrip('.')}"
         return parts[-1]
     return full_name
 
@@ -359,11 +366,22 @@ class Team:
     players: List[Player]
     pace_rating: float = 1.0
     three_pt_rate: float = 0.25
-    def_rating: float = 1.0
+    def_rating_interior: float = 1.0   # suppresses 2PT efficiency (rim protection / interior D)
+    def_rating_perimeter: float = 1.0  # suppresses 3PT efficiency (closeout / perimeter D)
     year: int = 2000
     score: int = 0
     team_fouls: int = 0  # Team fouls in current quarter (resets each quarter)
     on_court_indices: List[int] = None
+    destiny_boost: float = 1.0  # "Team of Destiny" — one randomly-chosen team
+    # per season (excluding the hardcoded top-5 contenders, see Season) gets
+    # this season-long shooting multiplier (1.0 = no effect for everyone
+    # else). Assigned once in Season.__post_init__, not per-game — unlike
+    # per-game "hot night" variance, this doesn't average out over a 25-game
+    # season since it's a sustained boost, not independent noise.
+    clutch_pedigree: float = 1.0  # team-level "has this roster actually won it"
+    # rating — only applies during GameSimulation.is_clutch_time() (close game,
+    # Q4/OT), not the whole game. 1.0 = neutral (default for every team except
+    # the ones explicitly marked in teams_free.csv).
 
     def __post_init__(self):
         """Initialize on-court players using starter flag, fallback to top 5 by MPG"""
@@ -900,7 +918,15 @@ class Team:
                     self.on_court_indices[i] = best_sub_idx
     
     def select_shooter(self) -> Player:
-        """Select a player to take the shot (weighted by usage rate)"""
+        """Select a player to take the shot (weighted by usage rate).
+
+        When a starter is off the court (resting/fouled out), the current
+        highest-usage on-court player picks up a share of that missing
+        starter's usage_rate — mirrors a co-star absorbing extra shots when
+        their teammate sits, rather than that usage simply vanishing. Deep
+        bench (starter=0, usually a floor default usage_rate) doesn't count,
+        so this only fires for genuine "a real option is missing" windows.
+        """
         on_court = self.get_on_court()
 
         # Safety check: ensure at least one player available
@@ -912,6 +938,12 @@ class Team:
         # This ensures focal points like Duncan/Dirk get appropriate touches
         # even if their PPG is lower than flashier scorers
         weights = [p.usage_rate for p in on_court]
+
+        missing_starters_usage = sum(p.usage_rate for p in self.players if p.starter == 1 and p not in on_court)
+        if missing_starters_usage > 0:
+            top_idx = max(range(len(on_court)), key=lambda i: on_court[i].usage_rate)
+            weights[top_idx] += missing_starters_usage * 0.15
+
         return random.choices(on_court, weights=weights)[0]
     
     def select_passer(self, exclude: Player = None) -> Player:
@@ -1043,18 +1075,31 @@ class GameSimulation:
 
     def get_home_court_boost(self, team: Team) -> float:
         """
-        Get home court advantage shooting boost for a team
+        Get this team's total shooting multiplier for the game: home court
+        advantage, "Team of Destiny" (a season-long boost randomly assigned to
+        one non-top-5 team per season, see Team.destiny_boost), and clutch
+        pedigree (only in actual clutch time — close game, Q4/OT — see
+        Team.clutch_pedigree).
 
         Returns:
-            1.025 if team is at home (~2.5% shooting boost)
-            1.0 if neutral court or team is away
+            1.025 if team is at home (~2.5% shooting boost), else 1.0,
+            multiplied by team.destiny_boost (1.0 for every team except
+            whichever one the season named Team of Destiny), further
+            multiplied by team.clutch_pedigree but ONLY when is_clutch_time()
+            is true — a proven team doesn't get an all-game edge, just a real
+            one in the moments that actually decide close games.
         """
         if self.home_team is None:
-            return 1.0  # Neutral court
+            boost = 1.0  # Neutral court
         elif team == self.home_team:
-            return 1.025  # 2.5% shooting boost at home
+            boost = 1.025  # 2.5% shooting boost at home
         else:
-            return 1.0  # Away team, no boost
+            boost = 1.0  # Away team, no boost
+        boost *= team.destiny_boost
+        is_clutch, _ = self.is_clutch_time()
+        if is_clutch:
+            boost *= team.clutch_pedigree
+        return boost
 
     def is_foul_trouble(self, player: Player) -> bool:
         """
@@ -1184,8 +1229,10 @@ class GameSimulation:
             return " | ".join(plays), scored
 
         # Check for non-shooting foul (before shot attempt)
-        # 10% chance of non-shooting foul during possession
-        if random.random() < 0.10:
+        # 15% chance of non-shooting foul during possession — bumped from 10%,
+        # confirmed via 80-game multi-matchup test to land team fouls at ~20.3/game,
+        # in the real ~18-22 NBA range (10% undershot at ~15.2/team)
+        if random.random() < 0.15:
             offensive_player = self.possession.select_shooter() if current_player is None else current_player
             fouling_player, fouled_out = self.commit_foul(defending_team, offensive_player)
             fouler_name = get_last_name(fouling_player.name)
@@ -1226,7 +1273,8 @@ class GameSimulation:
         # Someone takes a shot (always use usage_rate weighting, not last receiver)
         shooter = self.possession.select_shooter()
         shooter_name = get_last_name(shooter.name)
-        def_rating = defending_team.def_rating
+        def_rating_interior = defending_team.def_rating_interior
+        def_rating_perimeter = defending_team.def_rating_perimeter
 
         # FATIGUE: players ahead of their minute target shoot less efficiently
         # Superstars have more endurance — smaller penalty and higher floor
@@ -1296,7 +1344,7 @@ class GameSimulation:
             else:
                 # Pass last_passer for playmaker boost (if there were passes)
                 home_boost = self.get_home_court_boost(self.possession)
-                made = shooter.attempt_three(def_rating, passer=last_passer if num_passes > 0 else None, home_court_boost=home_boost, fatigue=fatigue)
+                made = shooter.attempt_three(def_rating_perimeter, passer=last_passer if num_passes > 0 else None, home_court_boost=home_boost, fatigue=fatigue)
 
                 # Check for foul (weighted by FTA per game)
                 foul_probability = min(0.3, shooter.fta_pg * 0.02)
@@ -1399,7 +1447,7 @@ class GameSimulation:
             else:
                 # Pass last_passer for playmaker boost (if there were passes)
                 home_boost = self.get_home_court_boost(self.possession)
-                made = shooter.attempt_shot(def_rating, passer=last_passer if num_passes > 0 else None, home_court_boost=home_boost, fatigue=fatigue)
+                made = shooter.attempt_shot(def_rating_interior, passer=last_passer if num_passes > 0 else None, home_court_boost=home_boost, fatigue=fatigue)
 
                 # Check for foul — urgent drive overrides normal probability
                 foul_probability = 0.50 if _urgent_drive else min(0.3, shooter.fta_pg * 0.02)
@@ -2064,7 +2112,9 @@ def load_teams_from_csv() -> Dict[str, Dict]:
                 'year': int(row['year']),
                 'pace_rating': float(row['pace_rating']),
                 'three_pt_rate': float(row['three_pt_rate']),
-                'def_rating': float(row['def_rating']),
+                'def_rating_interior': float(row['def_rating_interior']),
+                'def_rating_perimeter': float(row['def_rating_perimeter']),
+                'clutch_pedigree': float(row.get('clutch_pedigree', 1.0) or 1.0),
                 'players': []
             }
     
@@ -2124,7 +2174,7 @@ def select_team(teams_data: Dict, team_number: int) -> Team:
             idx = int(choice) - 1
             if 0 <= idx < len(team_list):
                 team_id, data = team_list[idx]
-                return Team(data['name'], data['players'], data['pace_rating'], data['three_pt_rate'], data['def_rating'], data['year'])
+                return Team(data['name'], data['players'], data['pace_rating'], data['three_pt_rate'], data['def_rating_interior'], data['def_rating_perimeter'], data['year'], clutch_pedigree=data['clutch_pedigree'])
             else:
                 console.print("[red]Invalid team number. Try again.[/red]")
         except ValueError:
@@ -2134,13 +2184,17 @@ def select_team(teams_data: Dict, team_number: int) -> Team:
 class InteractiveGame(GameSimulation):
     """Interactive game where user controls one team's decisions"""
 
-    def __init__(self, user_team: Team, cpu_team: Team, game_speed: float = 0.6):
+    def __init__(self, user_team: Team, cpu_team: Team, game_speed: float = 0.6, home_team: Team = None):
         """
         Initialize interactive game
         user_team: The team controlled by the user
         cpu_team: The CPU-controlled opponent
+        home_team: Which team has home court advantage (None = neutral court) —
+        standalone User vs Computer mode never passed this (always neutral);
+        Season Mode's "play it yourself" option does, matching the home court
+        boost the same matchup would get if watched/instant-simmed instead.
         """
-        super().__init__(user_team, cpu_team, game_speed)
+        super().__init__(user_team, cpu_team, game_speed, home_team=home_team)
         self.manual_control_team = user_team  # Mark user team for manual control (skip auto-rotations)
         self.user_team = user_team  # team1 is user
         self.cpu_team = cpu_team    # team2 is CPU
@@ -2483,7 +2537,7 @@ class InteractiveGame(GameSimulation):
                     surplus = ball_handler.minutes_played - (ball_handler.game_target_minutes * gp if gp > 0 else 0)
                     _fr = 0.010 if ball_handler.usage_rate > 25 else 0.015
                     fatigue = max(0.92 if ball_handler.usage_rate > 25 else 0.88, 1.0 - max(0.0, surplus * _fr))
-                    made = ball_handler.attempt_shot(self.cpu_team.def_rating, home_court_boost=home_boost, fatigue=fatigue)
+                    made = ball_handler.attempt_shot(self.cpu_team.def_rating_interior, home_court_boost=home_boost, fatigue=fatigue)
 
                     # Check for foul (weighted by FTA per game)
                     foul_probability = min(0.3, ball_handler.fta_pg * 0.02)
@@ -2565,7 +2619,7 @@ class InteractiveGame(GameSimulation):
                                 surplus = rebounder.minutes_played - (rebounder.game_target_minutes * gp if gp > 0 else 0)
                                 _fr = 0.010 if rebounder.usage_rate > 25 else 0.015
                                 fatigue = max(0.92 if rebounder.usage_rate > 25 else 0.88, 1.0 - max(0.0, surplus * _fr))
-                                made = rebounder.attempt_shot(self.cpu_team.def_rating, home_court_boost=home_boost, fatigue=fatigue)
+                                made = rebounder.attempt_shot(self.cpu_team.def_rating_interior, home_court_boost=home_boost, fatigue=fatigue)
                                 if made:
                                     self.user_team.score += 2
                                     plays.append(f"{rebounder.name} gets the board and tips it in!")
@@ -2608,7 +2662,7 @@ class InteractiveGame(GameSimulation):
                     surplus = ball_handler.minutes_played - (ball_handler.game_target_minutes * gp if gp > 0 else 0)
                     _fr = 0.010 if ball_handler.usage_rate > 25 else 0.015
                     fatigue = max(0.92 if ball_handler.usage_rate > 25 else 0.88, 1.0 - max(0.0, surplus * _fr))
-                    made = ball_handler.attempt_three(self.cpu_team.def_rating, home_court_boost=home_boost, fatigue=fatigue)
+                    made = ball_handler.attempt_three(self.cpu_team.def_rating_perimeter, home_court_boost=home_boost, fatigue=fatigue)
 
                     # Check for foul (weighted by FTA per game, rarer on 3PT)
                     foul_probability = min(0.2, ball_handler.fta_pg * 0.015)
@@ -2690,7 +2744,7 @@ class InteractiveGame(GameSimulation):
                                 surplus = rebounder.minutes_played - (rebounder.game_target_minutes * gp if gp > 0 else 0)
                                 _fr = 0.010 if rebounder.usage_rate > 25 else 0.015
                                 fatigue = max(0.92 if rebounder.usage_rate > 25 else 0.88, 1.0 - max(0.0, surplus * _fr))
-                                made = rebounder.attempt_shot(self.cpu_team.def_rating, home_court_boost=home_boost, fatigue=fatigue)
+                                made = rebounder.attempt_shot(self.cpu_team.def_rating_interior, home_court_boost=home_boost, fatigue=fatigue)
                                 if made:
                                     self.user_team.score += 2
                                     plays.append(f"{rebounder.name} gets the board and puts it back!")
@@ -3139,9 +3193,33 @@ class Season:
     current_game_index: int = 0  # Which game we're on in the schedule
     standings: Dict[str, Dict] = None  # team_id -> {wins, losses, pct, ppg, opp_ppg}
     player_season_stats: Dict[str, Dict] = None  # "Team|PlayerName" -> {total_pts, total_reb, games, ...}
+    destiny_team_id: str = None  # "Team of Destiny" — which team got this season's random boost
+
+    TEAM_OF_DESTINY_BOOST = 1.06  # season-long shooting multiplier for the destiny team
+
+    # Hardcoded, not computed — these are the 5 teams that came out on top across
+    # a real 50-season test (2026-08-13): 2017 Warriors, 2024 Celtics, 2024 OKC,
+    # 2026 Spurs, 2021 Bucks. Excluded from Team of Destiny so the boost creates a
+    # new story (a middle/bottom team surging) instead of reinforcing the teams
+    # that are already dominant — landing on an already-elite team wouldn't be a
+    # story, and it'd make the existing top-heavy concentration worse. No
+    # programmatic way to derive "top 5" yet without circularity (you'd need to
+    # simulate a season to rank teams, but need the ranking before the season
+    # starts to decide who's eligible) — revisit if that's ever solved.
+    TOP_5_TEAM_IDS = {'warriors_16', 'celtics_23', 'thunder_24', 'spurs_25', 'bucks_20'}
 
     def __post_init__(self):
         """Initialize season - generate schedule and empty standings"""
+        # "Team of Destiny" — randomly pick one non-top-5 team to bless for the
+        # whole season. Reset every team to neutral first in case Team objects
+        # are being reused across multiple Season() calls (e.g. replaying
+        # seasons in the same process).
+        for team in self.teams.values():
+            team.destiny_boost = 1.0
+        eligible = [tid for tid in self.teams if tid not in self.TOP_5_TEAM_IDS]
+        self.destiny_team_id = random.choice(eligible)
+        self.teams[self.destiny_team_id].destiny_boost = self.TEAM_OF_DESTINY_BOOST
+
         # Initialize standings for each team
         self.standings = {}
         for team_id in self.teams.keys():
@@ -3385,6 +3463,118 @@ def instant_sim_game(team1: Team, team2: Team, home_team: Team = None):
     game.simulate_game()
 
     # Team scores and player stats are already populated by the simulation
+    return game
+
+
+# ── Watcher Season Mode: box score capture ──────────────────────────────────
+# Writes to season_games.csv / season_box_scores.csv (same column schema as
+# the manual parse_game.py proof-of-concept, generated directly from live
+# Team/Player objects instead of parsed from console text — avoids the
+# team-name-inconsistency and corrupted-row issues found in the hand-parsed
+# games.csv/box_scores.csv). Separate filenames so this doesn't mix with or
+# overwrite that existing manual data.
+WATCHER_GAMES_CSV = "season_games.csv"
+WATCHER_BOX_SCORES_CSV = "season_box_scores.csv"
+
+
+def get_next_game_id(games_csv: str = WATCHER_GAMES_CSV) -> int:
+    """Get next game_id by reading the last row of the games CSV (1 if missing/empty)"""
+    if not os.path.exists(games_csv):
+        return 1
+    with open(games_csv, 'r', newline='') as f:
+        rows = list(csv.DictReader(f))
+        if not rows:
+            return 1
+        return int(rows[-1]['game_id']) + 1
+
+
+def record_game_result(game_id: int, team1_id: str, team1: Team, team2_id: str, team2: Team,
+                        game=None, games_csv: str = WATCHER_GAMES_CSV, box_csv: str = WATCHER_BOX_SCORES_CSV):
+    """Append one game's summary + full box score to the watcher CSV files.
+    team1 is home (matches the schedule convention used elsewhere).
+    game: the GameSimulation/InteractiveGame instance that played it out, used to
+    pull per-quarter scoring (Team objects don't carry quarter_scores themselves).
+    Quarter columns are left blank if not provided."""
+    game_date = date.today().isoformat()
+
+    # Convert cumulative end-of-quarter totals into per-quarter points (same
+    # logic as GameSimulation.show_box_score); only first 4 entries are used
+    # since games.csv has no OT columns — OT points get folded into Q4.
+    q_home = ['', '', '', '']
+    q_away = ['', '', '', '']
+    if game is not None and getattr(game, 'quarter_scores', None):
+        cum_home = game.quarter_scores.get('team1', [])
+        cum_away = game.quarter_scores.get('team2', [])
+        per_q_home, per_q_away = [], []
+        for i in range(len(cum_home)):
+            if i == 0:
+                per_q_home.append(cum_home[i])
+                per_q_away.append(cum_away[i])
+            else:
+                per_q_home.append(cum_home[i] - cum_home[i - 1])
+                per_q_away.append(cum_away[i] - cum_away[i - 1])
+        for i in range(min(3, len(per_q_home))):
+            q_home[i] = per_q_home[i]
+            q_away[i] = per_q_away[i]
+        if len(per_q_home) >= 4:
+            q_home[3] = sum(per_q_home[3:])  # fold any OT into Q4
+            q_away[3] = sum(per_q_away[3:])
+
+    games_exists = os.path.exists(games_csv)
+    with open(games_csv, 'a', newline='') as f:
+        fieldnames = ['game_id', 'date', 'home_team', 'away_team', 'home_score', 'away_score',
+                      'q1_home', 'q1_away', 'q2_home', 'q2_away', 'q3_home', 'q3_away',
+                      'q4_home', 'q4_away', 'notes']
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if not games_exists:
+            writer.writeheader()
+        writer.writerow({
+            'game_id': game_id,
+            'date': game_date,
+            'home_team': team1.name,
+            'away_team': team2.name,
+            'home_score': team1.score,
+            'away_score': team2.score,
+            'q1_home': q_home[0],
+            'q1_away': q_away[0],
+            'q2_home': q_home[1],
+            'q2_away': q_away[1],
+            'q3_home': q_home[2],
+            'q3_away': q_away[2],
+            'q4_home': q_home[3],
+            'q4_away': q_away[3],
+            'notes': '',
+        })
+
+    box_exists = os.path.exists(box_csv)
+    with open(box_csv, 'a', newline='') as f:
+        fieldnames = ['game_id', 'team', 'player', 'pts', 'reb', 'ast', 'stl', 'blk',
+                      'tov', 'min', 'fgm', 'fga', 'three_pm', 'three_pa', 'ftm', 'fta']
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if not box_exists:
+            writer.writeheader()
+        for team_name, team in ((team1.name, team1), (team2.name, team2)):
+            for player in team.players:
+                if player.minutes_played <= 0:
+                    continue
+                writer.writerow({
+                    'game_id': game_id,
+                    'team': team_name,
+                    'player': player.name,
+                    'pts': player.points,
+                    'reb': player.rebounds,
+                    'ast': player.assists,
+                    'stl': player.steals,
+                    'blk': player.blocks,
+                    'tov': player.turnovers,
+                    'min': round(player.minutes_played, 1),
+                    'fgm': player.fgm,
+                    'fga': player.fga,
+                    'three_pm': player.three_ptm,
+                    'three_pa': player.three_pta,
+                    'ftm': player.ftm,
+                    'fta': player.fta,
+                })
 
 
 def play_season_game_day(season: Season, game_speed: float = 0.6):
@@ -3443,19 +3633,44 @@ def play_season_game_day(season: Season, game_speed: float = 0.6):
             console.print(f"[bold]YOUR GAME: {matchup_text}[/bold]")
             console.print(f"[bold cyan]{'='*60}[/bold cyan]\n")
 
-            # Ask for game speed
-            console.print("[bold cyan]Game Speed:[/bold cyan]")
-            console.print("  1. Cinema (4.0s)  2. Slow (1.2s)  3. Normal (0.6s)  4. Fast (0.3s)  5. Simulate (0.05s)")
-            speed_choice = Prompt.ask("Select speed", choices=["1", "2", "3", "4", "5"], default=str(int(game_speed * 2) if game_speed == 0.6 else "5"))
-            speed_map = {"1": 4.0, "2": 1.2, "3": 0.6, "4": 0.3, "5": 0.05}
-            selected_speed = speed_map[speed_choice]
+            # How do you want to handle this game?
+            console.print("[bold cyan]How do you want to play this game?[/bold cyan]")
+            console.print("  1. Watch (CPU controls both teams)")
+            console.print("  2. Play it yourself (you control your team)")
+            console.print("  3. Instant Sim (skip straight to the result)")
+            mode_choice = Prompt.ask("Select option", choices=["1", "2", "3"], default="1")
 
             team1.reset_for_new_game()
             team2.reset_for_new_game()
 
-            # team1_id is home team (from schedule format)
-            game = GameSimulation(team1, team2, game_speed=selected_speed, home_team=team1)
-            game.simulate_game()
+            if mode_choice == "3":
+                # Instant Sim — no prompts, no display, straight to the result
+                game = instant_sim_game(team1, team2, home_team=team1)
+                console.print(f"\n[dim]{team1.name} {team1.score} - {team2.score} {team2.name}[/dim]")
+            else:
+                # Ask for game speed (both Watch and Play It Yourself use this)
+                console.print("\n[bold cyan]Game Speed:[/bold cyan]")
+                console.print("  1. Cinema (4.0s)  2. Slow (1.2s)  3. Normal (0.6s)  4. Fast (0.3s)  5. Simulate (0.05s)")
+                speed_choice = Prompt.ask("Select speed", choices=["1", "2", "3", "4", "5"], default=str(int(game_speed * 2) if game_speed == 0.6 else "5"))
+                speed_map = {"1": 4.0, "2": 1.2, "3": 0.6, "4": 0.3, "5": 0.05}
+                selected_speed = speed_map[speed_choice]
+
+                if mode_choice == "2":
+                    # Play it yourself — InteractiveGame, user controls whichever
+                    # side of team1/team2 is season.user_team_id
+                    user_team = team1 if season.user_team_id == team1_id else team2
+                    cpu_team = team2 if season.user_team_id == team1_id else team1
+                    # team1 is always home per the schedule convention, regardless
+                    # of which side the user is playing as
+                    game = InteractiveGame(user_team, cpu_team, game_speed=selected_speed, home_team=team1)
+                    try:
+                        game.simulate_game()
+                    except KeyboardInterrupt:
+                        console.print("\n[yellow]Game interrupted by user[/yellow]")
+                else:
+                    # Watch — team1_id is home team (from schedule format)
+                    game = GameSimulation(team1, team2, game_speed=selected_speed, home_team=team1)
+                    game.simulate_game()
 
             # Update standings
             season.update_standings(team1_id, team1.score, team2_id, team2.score)
@@ -3774,6 +3989,199 @@ def season_mode_menu(season: Season, game_speed: float):
                 break
 
 
+def watcher_play_next_game(season: Season, next_game_id: int) -> int:
+    """Play the next game on the schedule with no user team — always prompts for
+    speed and can be watched live. Records the box score. Returns the game_id
+    to use for the *next* game (next_game_id if this one wasn't played)."""
+    if season.is_season_complete():
+        return next_game_id
+
+    team1_id, team2_id = season.schedule[season.current_game_index]
+    team1 = season.teams[team1_id]
+    team2 = season.teams[team2_id]
+
+    console.print(f"\n[bold cyan]{'='*60}[/bold cyan]")
+    console.print(f"[bold]{team1.name} vs {team2.name}[/bold]  (Game {season.current_game_index + 1}/{len(season.schedule)})")
+    console.print(f"[bold cyan]{'='*60}[/bold cyan]\n")
+
+    console.print("[bold cyan]Game Speed:[/bold cyan]")
+    console.print("  1. Cinema (4.0s)  2. Slow (1.2s)  3. Normal (0.6s)  4. Fast (0.3s)  5. Simulate (0.05s)")
+    speed_choice = Prompt.ask("Select speed", choices=["1", "2", "3", "4", "5"], default="5")
+    speed_map = {"1": 4.0, "2": 1.2, "3": 0.6, "4": 0.3, "5": 0.05}
+    selected_speed = speed_map[speed_choice]
+
+    team1.reset_for_new_game()
+    team2.reset_for_new_game()
+
+    game = GameSimulation(team1, team2, game_speed=selected_speed, home_team=team1)
+    game.simulate_game()
+
+    season.update_standings(team1_id, team1.score, team2_id, team2.score)
+    season.aggregate_player_stats(team1_id, team1)
+    season.aggregate_player_stats(team2_id, team2)
+    record_game_result(next_game_id, team1_id, team1, team2_id, team2, game=game)
+
+    season.current_game_index += 1
+    return next_game_id + 1
+
+
+def watcher_simulate_rest(season: Season, next_game_id: int) -> int:
+    """Instant-sim every remaining game with no display, recording box scores
+    for each one. Returns the next available game_id."""
+    remaining_games = season.schedule[season.current_game_index:]
+    games_simmed = len(remaining_games)
+    console.print(f"\n[yellow]Simulating {games_simmed} remaining games...[/yellow]")
+
+    for team1_id, team2_id in remaining_games:
+        team1 = season.teams[team1_id]
+        team2 = season.teams[team2_id]
+
+        game = instant_sim_game(team1, team2, home_team=team1)
+
+        season.update_standings(team1_id, team1.score, team2_id, team2.score)
+        season.aggregate_player_stats(team1_id, team1)
+        season.aggregate_player_stats(team2_id, team2)
+        record_game_result(next_game_id, team1_id, team1, team2_id, team2, game=game)
+        next_game_id += 1
+
+        season.current_game_index += 1
+
+    console.print(f"[dim]({games_simmed} games simulated and recorded)[/dim]")
+    return next_game_id
+
+
+def export_season_report(season: Season, filepath: str = "season_report.md"):
+    """Write an end-of-season Markdown report (standings + stat leaders) —
+    the box-score-to-content pipeline: season_games.csv / season_box_scores.csv
+    have the per-game detail, this file has the aggregate summary."""
+    lines = ["# Season Report", ""]
+
+    lines.append("## Final Standings")
+    lines.append("")
+    lines.append("| Rank | Team | W | L | PCT | PPG | OPP PPG |")
+    lines.append("|---|---|---|---|---|---|---|")
+    for rank, (team_id, data) in enumerate(season.get_sorted_standings(), 1):
+        team_name = season.teams[team_id].name
+        lines.append(f"| {rank} | {team_name} | {data['wins']} | {data['losses']} | "
+                      f"{data['pct']:.3f} | {data['ppg']:.1f} | {data['opp_ppg']:.1f} |")
+    lines.append("")
+
+    players = [(k, v) for k, v in season.player_season_stats.items() if v['games'] > 0]
+
+    # spg/bpg aren't precomputed on the stats dict (unlike ppg/rpg/apg), so derive
+    # them here rather than in aggregate_player_stats — nothing else needs them per-game.
+    for _, stats in players:
+        stats['spg'] = stats['total_stl'] / stats['games']
+        stats['bpg'] = stats['total_blk'] / stats['games']
+
+    stat_specs = [('ppg', 'Points'), ('rpg', 'Rebounds'), ('apg', 'Assists'),
+                  ('spg', 'Steals'), ('bpg', 'Blocks')]
+    for stat_key, stat_label in stat_specs:
+        lines.append(f"## {stat_label} Per Game Leaders")
+        lines.append("")
+        lines.append("| Rank | Player | Team | GP | " + stat_key.upper() + " |")
+        lines.append("|---|---|---|---|---|")
+        leaders = sorted(players, key=lambda x: x[1][stat_key], reverse=True)[:10]
+        for rank, (key, stats) in enumerate(leaders, 1):
+            team_name = season.teams[stats['team_id']].name
+            lines.append(f"| {rank} | {stats['player_name']} | {team_name} | "
+                          f"{stats['games']} | {stats[stat_key]:.1f} |")
+        lines.append("")
+
+    # Shooting-pct leaders need a volume qualifier (BBRef-style) or a 1-for-1 game
+    # would top the board. Threshold is attempts-per-game-played, scaled to games.
+    pct_specs = [('fg_pct', 'total_fga', 3, 'FG%'), ('three_pt_pct', 'total_three_pta', 1, '3PT%')]
+    for pct_key, attempts_key, min_attempts_per_game, pct_label in pct_specs:
+        qualified = [(k, v) for k, v in players if v[attempts_key] >= v['games'] * min_attempts_per_game]
+        lines.append(f"## {pct_label} Leaders")
+        lines.append(f"*(min. {min_attempts_per_game} attempt{'s' if min_attempts_per_game != 1 else ''}/game)*")
+        lines.append("")
+        lines.append(f"| Rank | Player | Team | GP | {pct_label} |")
+        lines.append("|---|---|---|---|---|")
+        leaders = sorted(qualified, key=lambda x: x[1][pct_key], reverse=True)[:10]
+        for rank, (key, stats) in enumerate(leaders, 1):
+            team_name = season.teams[stats['team_id']].name
+            lines.append(f"| {rank} | {stats['player_name']} | {team_name} | "
+                          f"{stats['games']} | {stats[pct_key]:.1f}% |")
+        lines.append("")
+
+    with open(filepath, 'w') as f:
+        f.write("\n".join(lines))
+
+    console.print(f"[green]Season report written to {filepath}[/green]")
+
+
+def watcher_season_menu(season: Season):
+    """Interactive menu for Watcher Season Mode — no user team, every game can
+    be watched live or the rest of the season instant-simmed at any point.
+    Every game played, watched or instant, gets its box score recorded to
+    season_games.csv / season_box_scores.csv."""
+    season_complete = season.is_season_complete()
+    next_game_id = get_next_game_id()
+
+    while True:
+        console.print("\n[bold cyan]═══ WATCHER SEASON MODE ═══[/bold cyan]")
+
+        if season_complete:
+            console.print("[bold green]SEASON COMPLETE![/bold green]\n")
+            console.print("  1. View Final Standings")
+            console.print("  2. Stats Leaders (PPG)")
+            console.print("  3. Stats Leaders (RPG)")
+            console.print("  4. Stats Leaders (APG)")
+            console.print("  5. Export Season Report (season_report.md)")
+            console.print("  6. Exit Watcher Season Mode\n")
+
+            choice = Prompt.ask("Select option", choices=["1", "2", "3", "4", "5", "6"], default="1")
+
+            if choice == "1":
+                show_standings(season)
+            elif choice == "2":
+                show_stats_leaders(season, 'ppg')
+            elif choice == "3":
+                show_stats_leaders(season, 'rpg')
+            elif choice == "4":
+                show_stats_leaders(season, 'apg')
+            elif choice == "5":
+                export_season_report(season)
+            elif choice == "6":
+                break
+        else:
+            console.print(f"Games Played: {season.current_game_index}/{len(season.schedule)}\n")
+            console.print("  1. Watch Next Game")
+            console.print("  2. View Standings")
+            console.print("  3. Stats Leaders (PPG)")
+            console.print("  4. Stats Leaders (RPG)")
+            console.print("  5. Stats Leaders (APG)")
+            console.print("  6. Simulate Rest of Season (instant)")
+            console.print("  7. Exit Watcher Season Mode\n")
+
+            choice = Prompt.ask("Select option", choices=["1", "2", "3", "4", "5", "6", "7"], default="1")
+
+            if choice == "1":
+                next_game_id = watcher_play_next_game(season, next_game_id)
+                if season.is_season_complete():
+                    season_complete = True
+                    console.print("\n[bold green]═══ SEASON COMPLETE! ═══[/bold green]")
+                    show_standings(season)
+                    input("\nPress ENTER to continue...")
+            elif choice == "2":
+                show_standings(season)
+            elif choice == "3":
+                show_stats_leaders(season, 'ppg')
+            elif choice == "4":
+                show_stats_leaders(season, 'rpg')
+            elif choice == "5":
+                show_stats_leaders(season, 'apg')
+            elif choice == "6":
+                next_game_id = watcher_simulate_rest(season, next_game_id)
+                season_complete = True
+                console.print(f"\n[bold green]═══ SEASON COMPLETE! ═══[/bold green]")
+                show_standings(season)
+                input("\nPress ENTER to continue...")
+            elif choice == "7":
+                break
+
+
 def select_starting_lineup(team: Team) -> List[int]:
     """
     Allow user to manually select starting 5 players
@@ -3887,12 +4295,13 @@ def main():
         else:
             # Full Version: All modes including Season
             console.print("  2. Season Mode - Follow your team through a full season")
-            console.print("  3. User vs Computer - YOU control a team!\n")
-            mode_choice = Prompt.ask("Select mode", choices=["1", "2", "3"], default="1")
+            console.print("  3. User vs Computer - YOU control a team!")
+            console.print("  4. Watcher Season Mode - No team picked, watch or instant-sim the whole league\n")
+            mode_choice = Prompt.ask("Select mode", choices=["1", "2", "3", "4"], default="1")
 
         # Route based on mode choice and edition
         # In Free Edition: 1=Single Game, 2=User vs Computer
-        # In Full Version: 1=Single Game, 2=Season Mode, 3=User vs Computer
+        # In Full Version: 1=Single Game, 2=Season Mode, 3=User vs Computer, 4=Watcher Season Mode
 
         if mode_choice == "2" and not FREE_EDITION:
             # SEASON MODE (Full Version only)
@@ -3921,8 +4330,10 @@ def main():
                     data['players'],
                     data['pace_rating'],
                     data['three_pt_rate'],
-                    data['def_rating'],
-                    data['year']
+                    data['def_rating_interior'],
+                    data['def_rating_perimeter'],
+                    data['year'],
+                    clutch_pedigree=data['clutch_pedigree']
                 )
 
             # Create season
@@ -3935,6 +4346,39 @@ def main():
 
             # Enter season mode menu (speed chosen per game inside play_season_game_day)
             season_mode_menu(season, game_speed=0.6)
+
+            # After season ends, ask if they want to play again
+            flush_stdin()
+            play_again = Prompt.ask("\n[bold cyan]Return to main menu?[/bold cyan]", choices=["y", "n"], default="y")
+            if play_again.lower() != "y":
+                break
+
+        elif mode_choice == "4" and not FREE_EDITION:
+            # WATCHER SEASON MODE (Full Version only) - no user team, every
+            # game can be watched live or the season instant-simmed at any point
+            console.print("\n[bold cyan]═══ WATCHER SEASON MODE SETUP ═══[/bold cyan]\n")
+
+            # Create Team objects for all teams
+            season_teams = {}
+            for team_id, data in teams_data.items():
+                season_teams[team_id] = Team(
+                    data['name'],
+                    data['players'],
+                    data['pace_rating'],
+                    data['three_pt_rate'],
+                    data['def_rating_interior'],
+                    data['def_rating_perimeter'],
+                    data['year'],
+                    clutch_pedigree=data['clutch_pedigree']
+                )
+
+            season = Season(teams=season_teams, user_team_id=None)
+
+            console.print(f"[green]Season created![/green]")
+            console.print(f"Teams: {len(season.teams)}")
+            console.print(f"Games: {len(season.schedule)}\n")
+
+            watcher_season_menu(season)
 
             # After season ends, ask if they want to play again
             flush_stdin()

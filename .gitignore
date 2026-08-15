@@ -96,3 +96,11 @@ games.csv
 sim_data_1.xlsx
 parse_game.py
 series_sim.py
+season_games.csv
+season_box_scores.csv
+season_report.md
+season_recap_viz.html
+season_individual_awards_viz.html
+season_archive/
+basketball_sim_defsplit.py
+teams_free_defsplit.csv
