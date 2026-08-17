@@ -4,7 +4,7 @@ Classic NBA Text Basketball Simulation
 A nostalgic recreation of text-based basketball games
 """
 
-VERSION = "2.4.0"
+VERSION = "3.0.0"
 
 # ══════════════════════════════════════════════════════════════
 # FEATURE FLAG: Toggle between Full and Free Edition
